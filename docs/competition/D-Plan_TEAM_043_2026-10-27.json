@@ -1,0 +1,269 @@
+{
+  "_NOTE": "反例檔（TEAM_043 為示範用虛構隊）。【拒收 1 項】V1[C1] D3 引用不存在的 I9＝孤兒決策（反推指紋）。【警告 2 項】V2[C2] 2330 委託 3000 股≠官方公式推導值 2000——可能為記帳偏差，僅警示，蓄意不一致轉六(十四)(6)抽檢；V3[C9] 宣告 defensive/reduce、現金目標 8–15%，實際淨買超 +265 萬且預估現金 3.75%＝嘴上保守、手上激進（T-1 估算，僅警示）。",
+  "schema_version": "4.2",
+  "doc_type": "D-Plan",
+  "team_id": "TEAM_043",
+  "trade_date": "2026-10-27",
+  "sources": [
+    {
+      "source_id": "S1",
+      "authority": "twse",
+      "name": "TWSE 盤後資訊：上市個股日收盤價量 + 三大法人買賣超（參賽者自抓官方 OpenAPI）",
+      "url": "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+      "content_as_of": "2026-10-26T18:30:00+08:00",
+      "fetched_at": "2026-10-27T05:04:12+08:00"
+    },
+    {
+      "source_id": "S2",
+      "name": "美股收盤行情（SOX / NDX / SPX，2026-10-26 美東收盤）",
+      "url": "https://finance.example.com/us-close/2026-10-26",
+      "content_as_of": "2026-10-27T04:00:00+08:00",
+      "fetched_at": "2026-10-27T05:08:33+08:00",
+      "authority": "vendor"
+    },
+    {
+      "source_id": "S3",
+      "name": "台指期夜盤收盤（TAIFEX 盤後行情表）",
+      "url": "https://www.taifex.com.tw/cht/3/futDailyMarketReport",
+      "content_as_of": "2026-10-27T05:00:00+08:00",
+      "fetched_at": "2026-10-27T05:11:47+08:00",
+      "authority": "taifex"
+    },
+    {
+      "source_id": "S4",
+      "name": "台股 ADR 收盤（TSM / UMC，2026-10-26 美東收盤）",
+      "url": "https://finance.example.com/adr/2026-10-26",
+      "content_as_of": "2026-10-27T04:00:00+08:00",
+      "fetched_at": "2026-10-27T05:09:02+08:00",
+      "authority": "vendor"
+    },
+    {
+      "source_id": "S5",
+      "name": "Reuters:〈Fed officials signal further easing path at October meeting〉",
+      "url": "https://www.reuters.com/markets/us/fed-october-easing-2026-10-26/",
+      "published_at": "2026-10-27T03:41:00+08:00",
+      "content_as_of": "2026-10-27T03:41:00+08:00",
+      "fetched_at": "2026-10-27T06:02:19+08:00",
+      "authority": "media"
+    },
+    {
+      "source_id": "S6",
+      "name": "盤前快訊:〈金融股試撮走高，2891 試撮價 +1.8%〉",
+      "url": "https://news.example.com/preopen/2026-10-27-fin-auction",
+      "published_at": "2026-10-27T08:41:00+08:00",
+      "content_as_of": "2026-10-27T08:41:00+08:00",
+      "fetched_at": "2026-10-27T08:43:26+08:00",
+      "authority": "media"
+    }
+  ],
+  "observations": [
+    {
+      "obs_id": "O1",
+      "source_ref": [
+        "S1"
+      ],
+      "topic": "tw_market",
+      "statement": "TAIEX 收 23,412.5（-0.62%）；外資現貨賣超 187 億、投信買超 21 億；金融類股指數逆勢 +0.4%",
+      "values": {
+        "TAIEX": 23412.5,
+        "TAIEX_chg_pct": -0.62,
+        "foreign_net_twd_b": -18.7,
+        "fin_sector_chg_pct": 0.4
+      }
+    },
+    {
+      "obs_id": "O2",
+      "source_ref": [
+        "S2"
+      ],
+      "topic": "us_overnight",
+      "statement": "SOX -1.8%、NDX -0.9%、SPX -0.4%；半導體權值普遍收黑",
+      "values": {
+        "SOX_chg_pct": -1.8,
+        "NDX_chg_pct": -0.9,
+        "SPX_chg_pct": -0.4
+      }
+    },
+    {
+      "obs_id": "O3",
+      "source_ref": [
+        "S3"
+      ],
+      "topic": "futures_night",
+      "statement": "台指期夜盤收 23,290，較 T-1 日盤結算 -122 點（-0.52%）",
+      "values": {
+        "txf_night_close": 23290,
+        "gap_vs_day_pct": -0.52
+      }
+    },
+    {
+      "obs_id": "O4",
+      "source_ref": [
+        "S4"
+      ],
+      "topic": "adr",
+      "statement": "TSM ADR -1.5%，跌幅大於 SPX；UMC ADR -0.8%",
+      "values": {
+        "TSM_adr_chg_pct": -1.5,
+        "UMC_adr_chg_pct": -0.8
+      }
+    },
+    {
+      "obs_id": "O5",
+      "source_ref": [
+        "S5"
+      ],
+      "topic": "macro",
+      "statement": "Fed 官員於 10 月會議前釋出續行寬鬆訊號，市場隱含 12 月再降息一碼機率升至 71%",
+      "values": {
+        "dec_cut_prob_pct": 71
+      }
+    },
+    {
+      "obs_id": "O6",
+      "source_ref": [
+        "S6"
+      ],
+      "topic": "preopen_auction",
+      "statement": "T 日試撮 2891 高開 +1.8%，金融族群普遍試撮翻紅",
+      "values": {
+        "auction_2891_chg_pct": 1.8
+      }
+    }
+  ],
+  "market_view": {
+    "basis_refs": [
+      "O2",
+      "O3"
+    ],
+    "logic": "隔夜 SOX -1.8% 且夜盤同步下跌（O2/O3），判定短線風險升溫，轉趨保守，降低淨曝險並提高現金水位",
+    "regime": "risk_off",
+    "stance": "defensive",
+    "posture": {
+      "net_exposure_intent": "reduce",
+      "target_cash_pct_range": [
+        0.08,
+        0.15
+      ]
+    },
+    "counter_evidence": null
+  },
+  "inferences": [
+    {
+      "inf_id": "I1",
+      "premise_refs": [
+        "O2",
+        "O3",
+        "O4"
+      ],
+      "logic": "SOX -1.8% 且 TSM ADR -1.5%（O2/O4），夜盤台指期同向 -0.52%（O3），符合隔夜風險減碼邏輯 → 半導體核心持股 T 日開盤承壓",
+      "conclusion": "調降 2330 曝險至 23%",
+      "counter_evidence": "台積電基本面展望未變，僅減碼不出清",
+      "confidence": 0.72
+    },
+    {
+      "inf_id": "I2",
+      "premise_refs": [
+        "O1",
+        "O5",
+        "O6"
+      ],
+      "logic": "降息機率升至 71%（O5）、金融逆勢（O1），且 T 日試撮 2891 已高開 +1.8%（O6）確認買盤 → 加大建倉信心",
+      "conclusion": "新建 2891 至 4.5%",
+      "counter_evidence": null,
+      "confidence": 0.81
+    },
+    {
+      "inf_id": "I3",
+      "premise_refs": [
+        "O2",
+        "O3"
+      ],
+      "logic": "AI server 組裝族群無新事證，2317 權重偏離目標 0.9%（<1.5% 無交易帶）",
+      "conclusion": "2317 維持不動",
+      "counter_evidence": null,
+      "confidence": 0.8
+    }
+  ],
+  "decisions": [
+    {
+      "decision_id": "D1",
+      "ticker": "2330",
+      "action": "TRIM",
+      "target_weight": 0.23,
+      "inference_refs": [
+        "I1"
+      ],
+      "risk_check": "調整後距 25% 上限保留 2% 緩衝"
+    },
+    {
+      "decision_id": "D2",
+      "ticker": "2891",
+      "action": "BUY",
+      "target_weight": 0.045,
+      "inference_refs": [
+        "I2"
+      ],
+      "risk_check": "新建部位 4.5% ≤ 10% 上限"
+    },
+    {
+      "decision_id": "D3",
+      "ticker": "2454",
+      "action": "BUY",
+      "target_weight": 0.03,
+      "inference_refs": [
+        "I9"
+      ],
+      "risk_check": "3% ≤ 10% 上限"
+    }
+  ],
+  "no_trade_decisions": [
+    {
+      "ticker": "2317",
+      "reason_refs": [
+        "I3"
+      ],
+      "reason": "權重偏離 0.9% 在無交易帶內，維持不動"
+    },
+    {
+      "ticker": "2412",
+      "reason_refs": [
+        "I3"
+      ],
+      "reason": "防禦部位，無觸發再平衡規則"
+    }
+  ],
+  "orders": [
+    {
+      "ticker": "2330",
+      "side": "SELL",
+      "shares": 3000,
+      "decision_ref": "D1",
+      "derivation_detail": "（宣稱）依 derive-orders 推導"
+    },
+    {
+      "ticker": "2891",
+      "side": "BUY",
+      "shares": 108000,
+      "decision_ref": "D2",
+      "derivation_detail": "target_shares = floor(0.045×102,000,000 / 42.5 / 1000)×1000 = 108,000"
+    },
+    {
+      "ticker": "2454",
+      "side": "BUY",
+      "shares": 2000,
+      "decision_ref": "D3",
+      "derivation_detail": "target_shares = floor(0.03×102,000,000 / 1250 / 1000)×1000 = 2,000"
+    }
+  ],
+  "agent_metadata": {
+    "model_provider": "anthropic",
+    "model_version": "claude-opus-4-7",
+    "run_started_at": "2026-10-27T08:31:40+08:00",
+    "run_completed_at": "2026-10-27T08:47:12+08:00",
+    "input_tokens": 51300,
+    "output_tokens": 11200,
+    "tool_use_count": 15,
+    "code_version": "git:a1b2c3d"
+  }
+}
