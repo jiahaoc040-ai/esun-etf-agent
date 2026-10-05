@@ -1,0 +1,15 @@
+[
+ {
+  "Date": "1141231",
+  "SecuritiesCompanyCode": "3443",
+  "CompanyName": "創意",
+  "ForeignInvestorsIncludeMainlandAreaInvestors-TotalBuy": "1",
+  "ForeignInvestorsIncludeMainlandAreaInvestors-TotalSell": "1",
+  "ForeignInvestorsIncludeMainlandAreaInvestors-Difference": "-50,000",
+  "SecuritiesInvestmentTrustCompanies-Difference": "20,000",
+  "Dealers(Proprietary)-Difference": "1",
+  "Dealers(Hedge)-Difference": "2",
+  "Dealers-Difference": "-3,000",
+  "TotalDifference": "-33,000"
+ }
+]

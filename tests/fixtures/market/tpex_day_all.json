@@ -1,0 +1,44 @@
+[
+ {
+  "Date": "1141231",
+  "SecuritiesCompanyCode": "3443",
+  "CompanyName": "創意",
+  "Close": "2000.00",
+  "Change": "10.00",
+  "Open": "1990.00",
+  "High": "2010.00",
+  "Low": "1985.00",
+  "Average": "2001.00",
+  "TradingShares": "1,000,000",
+  "TransactionAmount": "2,000,500,000",
+  "TransactionNumber": "1000"
+ },
+ {
+  "Date": "1141231",
+  "SecuritiesCompanyCode": "6488",
+  "CompanyName": "環球晶",
+  "Close": "--",
+  "Change": "--",
+  "Open": "--",
+  "High": "--",
+  "Low": "--",
+  "Average": "--",
+  "TradingShares": "0",
+  "TransactionAmount": "0",
+  "TransactionNumber": "0"
+ },
+ {
+  "Date": "1141231",
+  "SecuritiesCompanyCode": "9999",
+  "CompanyName": "非名單",
+  "Close": "10",
+  "Change": "0",
+  "Open": "10",
+  "High": "10",
+  "Low": "10",
+  "Average": "10",
+  "TradingShares": "1000",
+  "TransactionAmount": "10000",
+  "TransactionNumber": "1"
+ }
+]
