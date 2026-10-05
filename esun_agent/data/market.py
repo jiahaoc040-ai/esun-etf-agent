@@ -10,6 +10,7 @@ parser 皆為純函式（不碰網路），以 tests/fixtures/market/ 的假資�
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import time
@@ -32,9 +33,10 @@ TWSE_DAY_ALL_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TWSE_STOCK_DAY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
 TWSE_T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
 TPEX_DAY_ALL_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
-TPEX_DAY_URL = "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php"
+# 櫃買中心新站端點（舊的 /web/stock/.../stk_quote_result.php 會忽略日期參數、永遠回傳最新交易日）
+TPEX_DAY_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/otc"
 TPEX_INST_ALL_URL = "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading"
-TPEX_INST_URL = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
+TPEX_INST_URL = "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
 
 CLOSE_TIME = "13:30:00+08:00"  # 收盤資料的 content_as_of；若交易所另有公告時間，呼叫端可覆寫
 TZ_SUFFIX = "+08:00"
@@ -71,6 +73,16 @@ def parse_roc_date(s: str) -> date:
 
 def to_roc_slash(d: date) -> str:
     return f"{d.year - 1911}/{d.month:02d}/{d.day:02d}"
+
+
+def check_payload_date(payload: dict, d: date, what: str) -> None:
+    """回應內的資料日期必須等於查詢日期；缺少或不符一律 raise（曾發生端點忽略日期參數而回傳最新日）。"""
+    raw = payload.get("date")
+    if not raw:
+        raise ValueError(f"{what}: 回應沒有 date 欄位，無法確認資料日期（查詢 {d}）")
+    got = parse_roc_date(raw)
+    if got != d:
+        raise ValueError(f"{what}: 回應資料日期 {got} ≠ 查詢日期 {d}，端點可能忽略了日期參數")
 
 
 def _finish(rows: list[dict], columns: list[str]) -> pd.DataFrame:
@@ -157,6 +169,7 @@ def parse_tpex_history_day(payload: dict, d: date, universe: dict | None = None)
     tables = payload.get("tables") or []
     if not tables or not tables[0].get("data"):
         return pd.DataFrame(columns=MARKET_COLUMNS)
+    check_payload_date(payload, d, "TPEx 日行情")
     t = tables[0]
     f = t["fields"]
     ic, ico, ih, il, icl = (_find_col(f, "代號"), _find_col(f, "開盤"), _find_col(f, "最高"),
@@ -252,6 +265,7 @@ def parse_tpex_inst_history_day(payload: dict, d: date, universe: dict | None = 
     tables = payload.get("tables") or []
     if not tables or not tables[0].get("data"):
         return pd.DataFrame(columns=INST_COLUMNS)
+    check_payload_date(payload, d, "TPEx 三大法人")
     t = tables[0]
     f = t["fields"]
     ic = _find_col(f, "代號")
@@ -276,10 +290,11 @@ class MarketFetcher:
     """薄薄一層 HTTP；sleep 為每次請求前的間隔（TWSE 對高頻請求會封 IP）。"""
 
     def __init__(self, session: requests.Session | None = None, sleep: float = 0.0,
-                 retries: int = 3, timeout: float = 30):
+                 retries: int = 3, timeout: float = 30, raw_dir: Path | None = None):
         self.session = session or requests.Session()
         self.session.headers.setdefault("User-Agent", "Mozilla/5.0 (esun-etf-agent)")
         self.sleep, self.retries, self.timeout = sleep, retries, timeout
+        self.raw_dir = raw_dir  # 設定後，每個成功的原始回應都存成 JSON（供製作真實 fixture）
 
     def get_json(self, url: str, params: dict | None = None):
         last: Exception | None = None
@@ -289,11 +304,21 @@ class MarketFetcher:
             try:
                 resp = self.session.get(url, params=params, timeout=self.timeout)
                 resp.raise_for_status()
-                return resp.json()
+                data = resp.json()
+                self._save_raw(url, params, data)
+                return data
             except (requests.RequestException, ValueError) as e:
                 last = e
                 time.sleep(min(2 ** attempt, 8))
         raise RuntimeError(f"GET {url} {params} 失敗: {last}") from last
+
+    def _save_raw(self, url: str, params: dict | None, data) -> None:
+        if self.raw_dir is None:
+            return
+        name = "_".join([url.rstrip("/").rsplit("/", 1)[-1]] + [str(v) for v in (params or {}).values() if v != ""])
+        name = re.sub(r"[^0-9A-Za-z_.\-]", "-", name) + ".json"
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
+        (self.raw_dir / name).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # ---- 行情
     def twse_day_all(self) -> pd.DataFrame:
@@ -309,7 +334,7 @@ class MarketFetcher:
         return parse_tpex_day_all(self.get_json(TPEX_DAY_ALL_URL))
 
     def tpex_day(self, d: date) -> pd.DataFrame:
-        payload = self.get_json(TPEX_DAY_URL, {"l": "zh-tw", "d": to_roc_slash(d), "o": "json"})
+        payload = self.get_json(TPEX_DAY_URL, {"date": d.strftime("%Y/%m/%d"), "type": "EW", "response": "json"})
         return parse_tpex_history_day(payload, d)
 
     # ---- 三大法人
@@ -319,8 +344,8 @@ class MarketFetcher:
         return parse_twse_t86(payload, d)
 
     def tpex_inst(self, d: date) -> pd.DataFrame:
-        payload = self.get_json(TPEX_INST_URL, {"l": "zh-tw", "se": "EW", "t": "D", "d": to_roc_slash(d),
-                                                "o": "json"})
+        payload = self.get_json(TPEX_INST_URL, {"type": "Daily", "sect": "EW", "date": d.strftime("%Y/%m/%d"),
+                                                "id": "", "response": "json"})
         return parse_tpex_inst_history_day(payload, d)
 
     def tpex_inst_latest(self) -> pd.DataFrame:
@@ -390,12 +415,12 @@ def source_info(d: date | str, authority: str, *, historical: bool = False, as_o
         if authority == "twse":
             url = f"{TWSE_STOCK_DAY_URL}?response=json&date={dd:%Y%m%d}" if historical else TWSE_DAY_ALL_URL
         else:
-            url = f"{TPEX_DAY_URL}?l=zh-tw&d={to_roc_slash(dd)}&o=json" if historical else TPEX_DAY_ALL_URL
+            url = f"{TPEX_DAY_URL}?date={dd:%Y/%m/%d}&type=EW&response=json" if historical else TPEX_DAY_ALL_URL
     elif kind == "institutional":
         if authority == "twse":
             url = f"{TWSE_T86_URL}?date={dd:%Y%m%d}&selectType=ALLBUT0999&response=json"
         else:
-            url = f"{TPEX_INST_URL}?l=zh-tw&se=EW&t=D&d={to_roc_slash(dd)}&o=json" if historical \
+            url = f"{TPEX_INST_URL}?type=Daily&sect=EW&date={dd:%Y/%m/%d}&id=&response=json" if historical \
                 else TPEX_INST_ALL_URL
     else:
         raise ValueError(kind)

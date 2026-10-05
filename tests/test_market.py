@@ -91,7 +91,7 @@ def test_source_info():
     s = m.source_info("2025-12-31", "twse")
     assert s == {"authority": "twse", "url": m.TWSE_DAY_ALL_URL, "content_as_of": "2025-12-31T13:30:00+08:00"}
     assert m.source_info("2025-12-31", "tpex")["url"] == m.TPEX_DAY_ALL_URL
-    assert "114/01/02" in m.source_info("2025-01-02", "tpex", historical=True)["url"]
+    assert "date=2025/01/02" in m.source_info("2025-01-02", "tpex", historical=True)["url"]
     assert m.source_info("2025-12-31", "twse", kind="institutional", as_of="2025-12-31T17:00:00+08:00")[
         "content_as_of"].endswith("17:00:00+08:00")
     with pytest.raises(ValueError):
@@ -104,6 +104,50 @@ def test_sources_for_day_uses_real_universe():
     assert [s["authority"] for s in m.sources_for_day(df)] == ["twse", "tpex"]
 
 
+def test_tpex_history_rejects_wrong_or_missing_date():
+    # 回應是 2025-01-02 的資料，但查詢 2025-01-03 → 端點忽略日期參數的情況
+    with pytest.raises(ValueError, match="≠ 查詢日期"):
+        m.parse_tpex_history_day(fx("tpex_history_day.json"), date(2025, 1, 3), UNI)
+    with pytest.raises(ValueError, match="≠ 查詢日期"):
+        m.parse_tpex_inst_history_day(fx("tpex_inst_history_day.json"), date(2025, 1, 3), UNI)
+    for name, fn in (("tpex_history_day.json", m.parse_tpex_history_day),
+                     ("tpex_inst_history_day.json", m.parse_tpex_inst_history_day)):
+        payload = fx(name)
+        del payload["date"]
+        with pytest.raises(ValueError, match="沒有 date"):
+            fn(payload, date(2025, 1, 2), UNI)
+
+
+def test_backfill_does_not_save_on_date_mismatch(tmp_path, monkeypatch):
+    uni = {"2330": {"name": "x", "market": "TWSE"}, "3443": {"name": "y", "market": "TPEX"}}
+    monkeypatch.setattr(m, "load_universe", lambda: uni)
+
+    class Stale(FakeFetcher):
+        def tpex_day(self, d):  # 端點忽略日期參數：永遠回 2025-01-02 的資料
+            return m.parse_tpex_history_day(fx("tpex_history_day.json"), d, UNI)
+
+    with pytest.raises(ValueError):
+        m.backfill(date(2025, 1, 1), date(2025, 1, 31), Stale(), tmp_path, log=lambda *_: None)
+    assert not (tmp_path / "2025-01-03.parquet").exists()
+
+
+def test_save_raw(tmp_path):
+    class R:
+        def __init__(self, data): self.data = data
+        def raise_for_status(self): pass
+        def json(self): return self.data
+
+    class S:
+        headers = {}
+        def get(self, url, params=None, timeout=None): return R({"date": "20250102", "tables": []})
+
+    f = m.MarketFetcher(session=S(), raw_dir=tmp_path)
+    f.get_json(m.TPEX_DAY_URL, {"date": "2025/01/02", "type": "EW", "response": "json"})
+    files = list(tmp_path.glob("*.json"))
+    assert len(files) == 1 and files[0].name.startswith("otc_2025-01-02")
+    assert json.loads(files[0].read_text(encoding="utf-8"))["date"] == "20250102"
+
+
 class FakeFetcher(m.MarketFetcher):
     def __init__(self):
         self.calls = 0
@@ -114,13 +158,13 @@ class FakeFetcher(m.MarketFetcher):
             else pd.DataFrame(columns=m.MARKET_COLUMNS)
 
     def tpex_day(self, d):
-        return m.parse_tpex_history_day(fx("tpex_history_day.json"), d, UNI)
+        return m.parse_tpex_history_day(fx("tpex_history_day.json") | {"date": d.strftime("%Y%m%d")}, d, UNI)
 
     def twse_inst(self, d):
         return m.parse_twse_t86(fx("twse_t86.json"), d, UNI)
 
     def tpex_inst(self, d):
-        return m.parse_tpex_inst_history_day(fx("tpex_inst_history_day.json"), d, UNI)
+        return m.parse_tpex_inst_history_day(fx("tpex_inst_history_day.json") | {"date": d.strftime("%Y%m%d")}, d, UNI)
 
 
 def test_backfill_resumes(tmp_path, monkeypatch):
