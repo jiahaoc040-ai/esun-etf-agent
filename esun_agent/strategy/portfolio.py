@@ -170,15 +170,10 @@ class PortfolioResult:
     notes: list[str] = field(default_factory=list)
 
 
-def construct_portfolio(scores: pd.Series, current: dict[str, float], p: PortfolioParams,
-                        top10: dict[str, dict[str, float]] | None = None) -> PortfolioResult:
-    """scores：合格股票的分數（高→低）；current：現持股占 NAV 權重（以前日收盤計）。"""
-    scores = scores.sort_values(ascending=False)
-    if len(scores) < p.min_hold:
-        raise ValueError(f"合格股票只有 {len(scores)} 檔，少於 min_hold={p.min_hold}")
-    selected = select_holdings(scores, set(current), p)
-    target = raw_weights(selected, scores, p)
-    target, ap = fit_active_share(target, scores, top10, p)
+def finalize_weights(target: dict[str, float], current: dict[str, float], p: PortfolioParams,
+                     top10: dict[str, dict[str, float]] | None, selected: list[str]) -> PortfolioResult:
+    """目標權重 → Active Share 修正 → 無交易帶（若讓 Active Share 不過則放棄無交易帶）。"""
+    target, ap = fit_active_share(target, None, top10, p)
     banded = apply_no_trade_band(target, current, p)
     notes = []
     if banded != target:
@@ -190,3 +185,13 @@ def construct_portfolio(scores: pd.Series, current: dict[str, float], p: Portfol
             notes.append("band_dropped_for_active_share")
     return PortfolioResult(weights={t: w for t, w in target.items() if w > 0}, selected=selected,
                            cash=1.0 - sum(target.values()), active_share=ap, notes=notes)
+
+
+def construct_portfolio(scores: pd.Series, current: dict[str, float], p: PortfolioParams,
+                        top10: dict[str, dict[str, float]] | None = None) -> PortfolioResult:
+    """scores：合格股票的分數（高→低）；current：現持股占 NAV 權重（以前日收盤計）。"""
+    scores = scores.sort_values(ascending=False)
+    if len(scores) < p.min_hold:
+        raise ValueError(f"合格股票只有 {len(scores)} 檔，少於 min_hold={p.min_hold}")
+    selected = select_holdings(scores, set(current), p)
+    return finalize_weights(raw_weights(selected, scores, p), current, p, top10, selected)

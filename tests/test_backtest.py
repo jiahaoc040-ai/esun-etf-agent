@@ -109,7 +109,7 @@ def test_no_trade_names_generate_no_orders():
 def test_window_returns_shape():
     panel, dates, _ = make_panel(seed=9)
     w = bt.window_returns(panel, STRAT, compute_factors(panel), None, length=10, step=10)
-    assert list(w.columns) == ["start", "end", "ret", "mdd", "bench_ret", "viol"] and len(w) >= 4
+    assert list(w.columns) == ["start", "end", "ret", "mdd", "bench_ret", "bench_cw_ret", "ex_ew", "ex_cw", "viol"] and len(w) >= 4
     assert (w["viol"] == 0).all()
     for _, row in w.iterrows():
         assert dates.index(row["end"]) - dates.index(row["start"]) == 9

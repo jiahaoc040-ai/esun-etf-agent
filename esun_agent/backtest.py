@@ -22,7 +22,8 @@ from .data.etf_holdings import check_target_weights
 from .data.prices import Panel
 from .ledger import Ledger
 from .orders import derive_orders
-from .strategy.factors import FACTOR_NAMES, MIN_HISTORY, compute_factors, eligible, factors_on, score
+from .strategy.factors import MIN_HISTORY, compute_factors, eligible, factors_on, score
+from .strategy.marketcap import capped_cap_weights, market_cap
 from .strategy.portfolio import PortfolioParams, construct_portfolio
 
 TRADING_DAYS = 252
@@ -30,10 +31,16 @@ TRADING_DAYS = 252
 
 @dataclass
 class Strategy:
+    """純因子選股策略（PR #3 初版，每日再平衡）。run_backtest 只依賴 name / rebalance_every / min_adv / decide。"""
     name: str
     factor_weights: dict[str, float]
     params: PortfolioParams = field(default_factory=PortfolioParams)
     min_adv: float = 2e8            # 20 日均成交值門檻（單檔約 4% × 10 億 = 4000 萬，≈ 日成交值的 20% 以內）
+    rebalance_every: int = 1
+
+    def decide(self, fdf, cap, current, top10):
+        sc = score(fdf, self.factor_weights, eligible(fdf, self.min_adv))
+        return construct_portfolio(sc, current, self.params, top10)
 
 
 @dataclass
@@ -60,6 +67,12 @@ class BacktestResult:
         s["viol_weight"] = int(d["v_weight"].sum())
         s["viol_cash"] = int(d["v_cash"].sum())
         s["ap_fail_days"] = int((~d["ap_ok"]).sum())
+        costs = float(d["fee"].sum() + d["tax"].sum())
+        nav = self.period(start, end)
+        pnl = float(nav.iloc[-1] - nav.iloc[0])
+        s["cost_total"] = costs
+        s["cost_drag_ann"] = costs / float(nav.mean()) * TRADING_DAYS / max(len(d), 1) if len(d) else math.nan
+        s["cost_share_of_gross"] = costs / (pnl + costs) if pnl > 0 else math.nan   # 費用占「毛利」比例
         return s
 
 
@@ -83,7 +96,8 @@ def equal_weight_benchmark(panel: Panel, start: str | None = None, end: str | No
     nav = (1 + r).cumprod()
     lo = start or nav.index[0]
     base = nav[nav.index < lo].iloc[-1:] if (nav.index < lo).any() else nav.iloc[:1]
-    return pd.concat([base, nav[(nav.index >= lo) & (nav.index <= (end or nav.index[-1]))]])
+    out = pd.concat([base, nav[(nav.index >= lo) & (nav.index <= (end or nav.index[-1]))]])
+    return out[~out.index.duplicated()]
 
 
 def _reject_unaffordable_buys(fills: list[dict], avg: dict[str, float], cash: float) -> list[dict]:
@@ -100,11 +114,33 @@ def _reject_unaffordable_buys(fills: list[dict], avg: dict[str, float], cash: fl
     return rejected
 
 
-def run_backtest(panel: Panel, strat: Strategy, factors: dict[str, pd.DataFrame] | None = None,
+def cap_weight_benchmark(panel: Panel, caps: pd.DataFrame, start: str | None = None, end: str | None = None,
+                         cap_tsmc: float = 0.20, cap_other: float = 0.08) -> pd.Series:
+    """市值加權並套上限（2330 ≤ 20%、其他 ≤ 8%）的基準：每日以「前一日」市值決定權重（只用前日資料）、
+    當日還原報酬加權、每日再平衡、不計成本。權重只放在前一日有市值的股票，起點 = 1.0。"""
+    px = panel.adj_close.ffill(limit=10)
+    ret = (px / px.shift(1) - 1).where(panel.close.notna() & panel.close.shift(1).notna(), 0.0).fillna(0.0)
+    dates = panel.dates
+    out = {dates[0]: 1.0}
+    nav = 1.0
+    for i in range(1, len(dates)):
+        w = capped_cap_weights(caps.loc[dates[i - 1]], cap_tsmc, cap_other)
+        nav *= 1.0 + sum(w[t] * ret.at[dates[i], t] for t in w) / max(sum(w.values()), 1e-12)
+        out[dates[i]] = nav
+    nav = pd.Series(out)
+    lo = start or nav.index[0]
+    base = nav[nav.index < lo].iloc[-1:] if (nav.index < lo).any() else nav.iloc[:1]
+    out = pd.concat([base, nav[(nav.index >= lo) & (nav.index <= (end or nav.index[-1]))]])
+    return out[~out.index.duplicated()]
+
+
+def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = None,
                  top10: dict[str, dict[str, float]] | None = None, start: str | None = None,
-                 end: str | None = None, capital: float = INITIAL_CAPITAL) -> BacktestResult:
+                 end: str | None = None, capital: float = INITIAL_CAPITAL,
+                 caps: pd.DataFrame | None = None) -> BacktestResult:
     """start/end 為「交易日 T」的範圍。第一個可交易日至少是第 MIN_HISTORY+1 個資料日（因子暖機）。"""
     factors = factors if factors is not None else compute_factors(panel)
+    caps = caps if caps is not None else market_cap(panel)[0]
     dates = panel.dates
     first = MIN_HISTORY if start is None else max(MIN_HISTORY, next(i for i, d in enumerate(dates) if d >= start))
     last = len(dates) - 1 if end is None else max(i for i, d in enumerate(dates) if d <= end)
@@ -129,15 +165,14 @@ def run_backtest(panel: Panel, strat: Strategy, factors: dict[str, pd.DataFrame]
         prev_nav = float(prev_nav)
         cur_w = {t: n * last_close[t] / prev_nav for t, n in led.holdings.items()}
 
-        # --- 決策（只用 D 日以前資料）
-        fdf = factors_on(factors, D)
-        uni = eligible(fdf, strat.min_adv)
-        sc = score(fdf, strat.factor_weights, uni)
-        res = construct_portfolio(sc, cur_w, strat.params, top10_ap)
-        tickers = sorted(set(res.weights) | set(led.holdings))
-        decisions = [{"ticker": t, "target_weight": res.weights.get(t, 0.0), "decision_id": f"D{n}"}
-                     for n, t in enumerate(tickers, 1)]
-        orders = derive_orders(decisions, prev_nav, last_close, dict(led.holdings))
+        # --- 決策（只用 D 日以前資料）；非再平衡日不產生委託（D-Plan 上全部是 no_trade）
+        orders = []
+        if (i - first) % strat.rebalance_every == 0:
+            res = strat.decide(factors_on(factors, D), caps.loc[D], cur_w, top10_ap)
+            tickers = sorted(set(res.weights) | set(led.holdings))
+            decisions = [{"ticker": t, "target_weight": res.weights.get(t, 0.0), "decision_id": f"D{n}"}
+                         for n, t in enumerate(tickers, 1)]
+            orders = derive_orders(decisions, prev_nav, last_close, dict(led.holdings))
 
         # --- T 日成交
         avg = panel.avg_price.loc[T]
@@ -180,20 +215,28 @@ def run_backtest(panel: Panel, strat: Strategy, factors: dict[str, pd.DataFrame]
                           rejected_buys=rejected_buys)
 
 
-def window_returns(panel: Panel, strat: Strategy, factors, top10, length: int = 24, step: int = 5,
-                   first: str | None = None, last: str | None = None) -> pd.DataFrame:
+def window_returns(panel: Panel, strat, factors, top10, length: int = 24, step: int = 5,
+                   first: str | None = None, last: str | None = None, caps: pd.DataFrame | None = None,
+                   bench_cw: pd.Series | None = None) -> pd.DataFrame:
     """每隔 step 個交易日起算一段 length 個交易日的全新回測（從 10 億現金起、含建倉成本），
-    回傳每段的報酬、MDD 與同期等權基準報酬。"""
+    回傳每段的報酬、MDD、兩個基準報酬與超額報酬（ex_ew：相對 150 檔等權；ex_cw：相對市值加權上限基準）。
+    first/last 是窗口「起點 T」的下限、「終點 T」的上限。"""
+    caps = caps if caps is not None else market_cap(panel)[0]
+    if bench_cw is None:
+        bench_cw = cap_weight_benchmark(panel, caps)
     dates = panel.dates
-    lo = max(MIN_HISTORY, dates.index(first) if first else MIN_HISTORY)
-    hi = (dates.index(last) if last else len(dates) - 1) - length + 1
+    lo = max(MIN_HISTORY, next(i for i, d in enumerate(dates) if d >= first) if first else MIN_HISTORY)
+    hi = (max(i for i, d in enumerate(dates) if d <= last) if last else len(dates) - 1) - length + 1
     out = []
     for s in range(lo, hi + 1, step):
         a, b = dates[s], dates[s + length - 1]
-        r = run_backtest(panel, strat, factors, top10, start=a, end=b)
+        r = run_backtest(panel, strat, factors, top10, start=a, end=b, caps=caps)
         p = perf(r.nav)
-        bench = equal_weight_benchmark(panel, a, b)
-        out.append({"start": a, "end": b, "ret": p["total_return"], "mdd": p["mdd"],
-                    "bench_ret": float(bench.iloc[-1] / bench.iloc[0] - 1),
+        ew = equal_weight_benchmark(panel, a, b)
+        cw = bench_cw[(bench_cw.index >= dates[s - 1]) & (bench_cw.index <= b)]
+        ew_ret = float(ew.iloc[-1] / ew.iloc[0] - 1)
+        cw_ret = float(cw.iloc[-1] / cw.iloc[0] - 1)
+        out.append({"start": a, "end": b, "ret": p["total_return"], "mdd": p["mdd"], "bench_ret": ew_ret,
+                    "bench_cw_ret": cw_ret, "ex_ew": p["total_return"] - ew_ret, "ex_cw": p["total_return"] - cw_ret,
                     "viol": sum(r.violations.values())})
     return pd.DataFrame(out)
