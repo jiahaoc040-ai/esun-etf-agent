@@ -38,6 +38,8 @@ MANUAL_COLUMNS = ["etf_code", "name", "rank", "ticker", "weight_pct"]
 MONEYDJ_URL = "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid={code}.TW"
 STALE_DAYS = 3
 MANUAL_DATA_DATE = "manual"
+# 名稱含這些字的列是現金部位／衍生品／應收應付，不是持股，不可算進前 10 大
+NON_HOLDING_KEYWORDS = ("現金", "期貨", "保證金", "應收", "應付", "附買回")
 
 
 # --------------------------------------------------------------------------- 解析
@@ -108,7 +110,7 @@ def parse_moneydj(html: str, what: str = "") -> dict:
     """解析 MoneyDJ 持股明細頁 → {"data_date": "YYYY-MM-DD", "holdings": {ticker: weight(小數)}}。
 
     找「持股明細」之後的每個「資料日期」，若其後緊接的第一個表格表頭含「個股名稱」與「投資比例」，即為持股表。
-    有效列（名稱非空且比例可解析）少於 10 → ValueError；多於 10 取權重前 10 大。
+    名稱含「現金／期貨／保證金／應收／應付／附買回」的列排除。有效列（名稱非空且比例可解析）少於 10 → ValueError；多於 10 取權重前 10 大。
     """
     marker = html.find("持股明細")
     if marker < 0:
@@ -128,6 +130,8 @@ def parse_moneydj(html: str, what: str = "") -> dict:
             holdings: dict[str, float] = {}
             for r in table[hdr_i + 1:]:
                 if len(r) <= max(ni, wi):
+                    continue
+                if any(k in r[ni] for k in NON_HOLDING_KEYWORDS):
                     continue
                 t, w = parse_holding_name(r[ni]), parse_percent(r[wi])
                 if t is None or w is None:

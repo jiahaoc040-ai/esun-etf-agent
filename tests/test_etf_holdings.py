@@ -189,3 +189,13 @@ def test_row_without_bracket_code_is_kept_as_name():
     assert len(r["holdings"]) == 10
     assert r["holdings"]["英飛凌科技股份有限公司"] == 0.0315
     assert r["holdings"]["2330"] == 0.095
+
+
+def test_non_holding_rows_excluded():
+    html = read("moneydj_sample.html")
+    extra = "".join(f"<tr><td>{n}</td><td>{w}</td><td>1</td></tr>" for n, w in [
+        ("現金", 20.0), ("台指期貨(TXF)", 15.0), ("期貨保證金", 5.0), ("應收付息", 4.0),
+        ("應付款項", 3.0), ("附買回債券", 2.5), ("美元現金(USD)", 6.0)])
+    html = html.replace("<tbody>", "<tbody>" + extra)
+    r = eh.parse_moneydj(html, "x")
+    assert r["holdings"] == EXPECTED
