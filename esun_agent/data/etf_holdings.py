@@ -1,18 +1,25 @@
 """主動型 ETF 前 10 大持股（Active Share 比對基準）。
 
-資料來源：各投信官網／TWSE ETF 揭露頁。每家頁面格式不同，這裡不寫死各投信的版面，而是：
-  - `data/reference/etf_sources.csv` 登錄每檔 ETF 的 url 與 format（html / json / csv），由使用者填寫；
-  - 通用 parser（HTML 表格、JSON、CSV）依欄位關鍵字（代號/名稱/比重…）找出持股列，取權重前 10 大；
-  - 抓不到或解析失敗的 ETF 不會輸出殘缺資料，而是列入 missing 並產生手動補資料的 CSV 模板。
-輸出：data/etf_top10/YYYY-MM-DD.json，格式 {etf_code: {ticker: weight}}（weight 為 0~1 的小數）。
-海外型 ETF（etf_sources.csv 的 overseas=1）持股與台股無交集，標記並跳過。
+單一資料源：MoneyDJ「持股明細」頁
+  https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid={code}.TW
+頁面為 UTF-8（requests 必須設 resp.encoding="utf-8"）。「持股明細」區塊有「資料日期：YYYY/MM/DD」，
+接著是表格「個股名稱｜投資比例(%)｜持有股數」，列出前 10 大。個股名稱格式：
+  台積電(2330.TW)、國巨*(2327.TW)、Lumentum(LITE.US)、Samsung Elec Mech(009150.KS)
+.TW 且 4 位數 → 台股代號（如 "2330"）；其他保留括號內原字串（如 "LITE.US"），不視為台股。
+
+輸出 data/etf_top10/YYYY-MM-DD.json：
+  {"as_of": 抓取基準日, "data_dates": {etf: 該檔資料日期}, "top10": {etf: {ticker: weight(0~1)}},
+   "overseas": [純美股、跳過者], "stale": {etf: 落後天數}}
+每檔 ETF 的資料日期可能不同；比基準日（最新交易日）舊超過 STALE_DAYS 天會列入 stale 警告（不視為缺漏）。
+抓不到或解析失敗的 ETF 不輸出殘缺資料，列入 missing 並產生手動補資料的 CSV 模板。
 """
 from __future__ import annotations
 
 import csv
 import json
 import re
-from datetime import date
+import time
+from datetime import date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -20,87 +27,43 @@ import requests
 
 from ..active_share import check_active_share, top_n
 from ..config import ACTIVE_SHARE_MIN, ACTIVE_SHARE_TOP_N, REFERENCE_DIR, ROOT
-from ..universe import load_active_etfs, load_universe
+from ..universe import load_active_etfs
 
 ETF_TOP10_DIR = ROOT / "data" / "etf_top10"
 SOURCES_PATH = REFERENCE_DIR / "etf_sources.csv"
+MARKET_DIR = ROOT / "data" / "market"
 MANUAL_FILENAME = "manual.csv"
 TEMPLATE_FILENAME = "manual_template.csv"
 MANUAL_COLUMNS = ["etf_code", "name", "rank", "ticker", "weight_pct"]
-
-CODE_KEYS = ("證券代號", "股票代號", "代號", "代碼", "code", "symbol", "ticker", "stockno")
-NAME_KEYS = ("證券名稱", "股票名稱", "名稱", "name")
-WEIGHT_KEYS = ("比重", "權重", "比例", "weight", "ratio", "percent", "%", "占")
-
-
-# --------------------------------------------------------------------------- 欄位 / 數值正規化
-
-def _has(key: str, kws) -> bool:
-    k = str(key).lower().replace(" ", "")
-    return any(w.lower() in k for w in kws)
+MONEYDJ_URL = "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid={code}.TW"
+STALE_DAYS = 3
+MANUAL_DATA_DATE = "manual"
 
 
-def parse_ticker(cell) -> str | None:
-    """'2330'、'2330 台積電'、'2330.TW'、'2330 TT' → '2330'；無代號（現金、期貨）回傳 None。"""
-    m = re.match(r"^\s*(\d{4,6}[A-Z]?)(?![0-9A-Za-z])", str(cell or "").upper())
-    return m.group(1) if m else None
+# --------------------------------------------------------------------------- 解析
 
-
-def parse_weight(cell) -> tuple[float, bool] | None:
-    """回傳 (數值, 是否帶 % 符號)；無法解析回傳 None。"""
-    s = str(cell if cell is not None else "").strip().replace(",", "")
-    if not s or s in ("-", "--", "N/A"):
+def parse_holding_name(cell: str) -> str | None:
+    """'台積電(2330.TW)' → '2330'；'Lumentum(LITE.US)' → 'LITE.US'；'009150.KS' 同理保留原字串。
+    .TW 但不是 4 位純數字（如 00679B.TW）也保留原字串。沒有括號代號（現金等）回傳 None。"""
+    m = re.search(r"\(([^()\s]+)\)\s*$", str(cell or "").strip())
+    if not m:
         return None
-    pct = s.endswith("%")
+    code = m.group(1).upper()
+    m2 = re.fullmatch(r"(\d{4})\.TW", code)
+    return m2.group(1) if m2 else code
+
+
+def parse_percent(cell) -> float | None:
+    s = str(cell if cell is not None else "").strip().replace(",", "").rstrip("%").strip()
     try:
-        return float(s.rstrip("%").strip()), pct
+        return float(s)
     except ValueError:
         return None
 
 
-def _name_to_ticker() -> dict[str, str]:
-    return {re.sub(r"\s", "", v["name"]): t for t, v in load_universe().items()}
-
-
-def normalize_rows(rows: list[dict], what: str = "") -> dict[str, float]:
-    """通用持股列 → {ticker: weight(小數)}，取權重前 10 大。
-
-    rows 為 dict 列表，欄名由關鍵字判定。代號欄解析不出來時，改用名稱對 150 檔名單反查；
-    仍對不上的列（現金、期貨、名單外且無代號者）略過。有效列少於 10 → ValueError（不輸出殘缺資料）。
-    權重單位：任何一格帶 % 或總和 > 1.5 → 視為百分比；否則視為小數。
-    """
-    if not rows:
-        raise ValueError(f"{what}: 沒有任何持股列")
-    keys = list(rows[0].keys())
-    code_k = next((k for k in keys if _has(k, CODE_KEYS)), None)
-    name_k = next((k for k in keys if _has(k, NAME_KEYS)), None)
-    w_k = next((k for k in keys if _has(k, WEIGHT_KEYS)), None)
-    if w_k is None or (code_k is None and name_k is None):
-        raise ValueError(f"{what}: 找不到代號/名稱或權重欄位，現有欄位 {keys}")
-    n2t = _name_to_ticker()
-    parsed, any_pct = {}, False
-    for r in rows:
-        t = parse_ticker(r.get(code_k)) if code_k else None
-        if t is None and name_k:
-            t = n2t.get(re.sub(r"\s", "", str(r.get(name_k, ""))))
-        w = parse_weight(r.get(w_k))
-        if t is None or w is None:
-            continue
-        any_pct |= w[1]
-        parsed[t] = parsed.get(t, 0.0) + w[0]
-    if len(parsed) < ACTIVE_SHARE_TOP_N:
-        raise ValueError(f"{what}: 只解析出 {len(parsed)} 檔有代號的持股（需要至少 {ACTIVE_SHARE_TOP_N}）")
-    scale = 100.0 if (any_pct or sum(parsed.values()) > 1.5) else 1.0
-    out = top_n({t: w / scale for t, w in parsed.items()})
-    total = sum(out.values())
-    if not 0.05 <= total <= 1.0001:
-        raise ValueError(f"{what}: 前 10 大權重總和 {total:.4f} 不合理，可能單位判斷錯誤")
-    return {t: round(w, 6) for t, w in out.items()}
-
-
-# --------------------------------------------------------------------------- parsers
-
 class _TableParser(HTMLParser):
+    """收集所有表格（只取最外層）的儲存格文字；cell 內巢狀標籤（a/span）的文字會合併。"""
+
     def __init__(self):
         super().__init__()
         self.tables: list[list[list[str]]] = []
@@ -134,103 +97,112 @@ class _TableParser(HTMLParser):
             self._cell.append(data)
 
 
-def parse_html(html: str, what: str = "") -> dict[str, float]:
-    """從 HTML 找出第一個「表頭同時有（代號或名稱）與權重」的表格。巢狀表格只取最外層。"""
-    p = _TableParser()
-    p.feed(html)
-    for table in p.tables:
-        for i, header in enumerate(table):
-            if any(_has(c, WEIGHT_KEYS) for c in header) and \
-                    any(_has(c, CODE_KEYS + NAME_KEYS) for c in header):
-                body = [dict(zip(header, r)) for r in table[i + 1:] if len(r) >= len(header)]
-                return normalize_rows(body, what)
-    raise ValueError(f"{what}: HTML 中找不到持股表格（{len(p.tables)} 個表格皆無代號/權重表頭）")
+_DATE_RE = re.compile(r"資料日期\s*[：:]\s*(?:<[^>]*>\s*)*(\d{4})/(\d{1,2})/(\d{1,2})")
 
 
-def _find_record_list(obj):
-    """遞迴找出「dict 列表且含代號/名稱與權重 key」的列表（取最長者）。"""
-    best = []
-    if isinstance(obj, list):
-        if obj and all(isinstance(x, dict) for x in obj):
-            ks = list(obj[0].keys())
-            if any(_has(k, WEIGHT_KEYS) for k in ks) and any(_has(k, CODE_KEYS + NAME_KEYS) for k in ks):
-                best = obj
-        for x in obj:
-            c = _find_record_list(x)
-            if len(c) > len(best):
-                best = c
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            c = _find_record_list(v)
-            if len(c) > len(best):
-                best = c
-    return best
+def parse_moneydj(html: str, what: str = "") -> dict:
+    """解析 MoneyDJ 持股明細頁 → {"data_date": "YYYY-MM-DD", "holdings": {ticker: weight(小數)}}。
 
-
-def parse_json(payload, what: str = "") -> dict[str, float]:
-    rows = _find_record_list(payload)
-    if not rows:
-        raise ValueError(f"{what}: JSON 中找不到含代號與權重的持股列表")
-    return normalize_rows(rows, what)
-
-
-def parse_csv_text(text: str, what: str = "") -> dict[str, float]:
-    text = text.lstrip("﻿")
-    return normalize_rows(list(csv.DictReader(text.splitlines())), what)
-
-
-PARSERS = {"html": lambda body, what: parse_html(body, what),
-           "json": lambda body, what: parse_json(json.loads(body), what),
-           "csv": lambda body, what: parse_csv_text(body, what)}
+    找「持股明細」之後的每個「資料日期」，若其後緊接的第一個表格表頭含「個股名稱」與「投資比例」，即為持股表。
+    有效列（名稱帶括號代號且比例可解析）少於 10 → ValueError；多於 10 取權重前 10 大。
+    """
+    marker = html.find("持股明細")
+    if marker < 0:
+        raise ValueError(f"{what}: 頁面沒有「持股明細」區塊")
+    last_err = "找不到「資料日期」"
+    for m in _DATE_RE.finditer(html, marker):
+        p = _TableParser()
+        p.feed(html[m.end():])
+        for table in p.tables[:1]:  # 只看「資料日期」後緊接的第一個表格
+            hdr_i = next((i for i, r in enumerate(table)
+                          if any("個股名稱" in c for c in r) and any("投資比例" in c for c in r)), None)
+            if hdr_i is None:
+                continue
+            hdr = table[hdr_i]
+            ni = next(i for i, c in enumerate(hdr) if "個股名稱" in c)
+            wi = next(i for i, c in enumerate(hdr) if "投資比例" in c)
+            holdings: dict[str, float] = {}
+            for r in table[hdr_i + 1:]:
+                if len(r) <= max(ni, wi):
+                    continue
+                t, w = parse_holding_name(r[ni]), parse_percent(r[wi])
+                if t is None or w is None:
+                    continue
+                holdings[t] = holdings.get(t, 0.0) + w / 100.0
+            if len(holdings) < ACTIVE_SHARE_TOP_N:
+                last_err = f"只解析出 {len(holdings)} 檔持股（需要至少 {ACTIVE_SHARE_TOP_N}）"
+                break
+            out = {t: round(w, 6) for t, w in top_n(holdings).items()}
+            if not 0.05 <= sum(out.values()) <= 1.0001:
+                raise ValueError(f"{what}: 前 10 大權重總和 {sum(out.values()):.4f} 不合理")
+            y, mo, d = (int(x) for x in m.groups())
+            return {"data_date": date(y, mo, d).isoformat(), "holdings": out}
+        # 這個「資料日期」後面沒有持股表 → 試下一個
+    raise ValueError(f"{what}: 無法解析持股明細：{last_err}")
 
 
 # --------------------------------------------------------------------------- 來源登錄
 
 def load_sources(path: Path | None = None) -> dict[str, dict]:
-    """{etf_code: {issuer, overseas(bool), format, url}}；以 active_etfs.csv 的 30 檔為準。"""
-    out = {c: {"issuer": "", "overseas": False, "format": "", "url": ""} for c in load_active_etfs()}
+    """{etf_code: {overseas(bool), url}}；以 active_etfs.csv 的 30 檔為準。
+    overseas=1 只用在純美股 ETF（持股與台股無交集）；全球型但持有台股者不可跳過。"""
+    out = {c: {"overseas": False, "url": MONEYDJ_URL.format(code=c)} for c in load_active_etfs()}
     with open(path or SOURCES_PATH, encoding="utf-8") as f:
         for r in csv.DictReader(f):
             if r["etf_code"] in out:
-                out[r["etf_code"]] = {"issuer": r["issuer"], "overseas": r["overseas"].strip() == "1",
-                                      "format": r["format"].strip().lower(), "url": r["url"].strip()}
+                out[r["etf_code"]] = {"overseas": r["overseas"].strip() == "1",
+                                      "url": r["url"].strip() or MONEYDJ_URL.format(code=r["etf_code"])}
     return out
 
 
 # --------------------------------------------------------------------------- 抓取
 
+def latest_trading_day(market_dir: Path | None = None) -> date | None:
+    """data/market/ 下最新的行情檔日期；沒有則 None。"""
+    files = sorted((market_dir or MARKET_DIR).glob("????-??-??.parquet"))
+    return date.fromisoformat(files[-1].stem) if files else None
+
+
 def fetch_one(code: str, src: dict, session: requests.Session, raw_dir: Path | None, day: str,
-              timeout: float = 30) -> dict[str, float]:
-    if not src["url"] or src["format"] not in PARSERS:
-        raise ValueError("etf_sources.csv 尚未填 url/format")
+              timeout: float = 30) -> dict:
     resp = session.get(src["url"], timeout=timeout)
     resp.raise_for_status()
-    if resp.encoding is None or resp.encoding.lower() == "iso-8859-1":
-        resp.encoding = resp.apparent_encoding or "utf-8"
+    resp.encoding = "utf-8"  # MoneyDJ 為 UTF-8，不設會被猜成 ISO-8859-1 而亂碼
     body = resp.text
     if raw_dir is not None:
         raw_dir.mkdir(parents=True, exist_ok=True)
-        (raw_dir / f"etf_{code}_{day}.{src['format']}").write_text(body, encoding="utf-8")
-    return PARSERS[src["format"]](body, code)
+        (raw_dir / f"etf_{code}_{day}.html").write_text(body, encoding="utf-8")
+    return parse_moneydj(body, code)
 
 
 def fetch_all(day: date | str, raw_dir: Path | None = None, sources: dict[str, dict] | None = None,
-              session: requests.Session | None = None) -> dict:
-    """逐檔抓取；單檔失敗不影響其他檔。回傳 {date, top10, overseas, missing:{etf: 原因}}。"""
+              session: requests.Session | None = None, ref_date: date | None = None,
+              sleep: float = 0.0) -> dict:
+    """逐檔抓取；單檔失敗不影響其他檔。ref_date = 最新交易日（stale 判斷基準；預設取 data/market 最新檔，
+    再沒有就用 day）。回傳 {date, top10, data_dates, overseas, missing:{etf: 原因}, stale:{etf: 落後天數}}。"""
     ds = str(day)
+    ref = ref_date or latest_trading_day() or date.fromisoformat(ds)
     sources = sources if sources is not None else load_sources()
     session = session or requests.Session()
     session.headers.setdefault("User-Agent", "Mozilla/5.0 (esun-etf-agent)")
-    top10, overseas, missing = {}, [], {}
+    top10, data_dates, overseas, missing, stale = {}, {}, [], {}, {}
     for code, src in sources.items():
         if src["overseas"]:
             overseas.append(code)
             continue
+        if sleep:
+            time.sleep(sleep)
         try:
-            top10[code] = fetch_one(code, src, session, raw_dir, ds)
+            r = fetch_one(code, src, session, raw_dir, ds)
         except Exception as e:  # 每檔獨立：網路、HTTP、格式改版都只標記該檔
             missing[code] = f"{type(e).__name__}: {e}"
-    return {"date": ds, "top10": top10, "overseas": sorted(overseas), "missing": missing}
+            continue
+        top10[code], data_dates[code] = r["holdings"], r["data_date"]
+        lag = (ref - date.fromisoformat(r["data_date"])).days
+        if lag > STALE_DAYS:
+            stale[code] = lag
+    return {"date": ds, "ref_date": ref.isoformat(), "top10": top10, "data_dates": data_dates,
+            "overseas": sorted(overseas), "missing": missing, "stale": stale}
 
 
 # --------------------------------------------------------------------------- 手動補資料
@@ -261,12 +233,12 @@ def load_manual(path: Path) -> dict[str, dict[str, float]]:
             code = r["etf_code"].strip()
             if code not in known:
                 raise ValueError(f"{path.name}: 未知的 ETF 代號 {code}")
-            w = parse_weight(r.get("weight_pct"))
+            w = parse_percent(r.get("weight_pct"))
             if w is None:
                 raise ValueError(f"{path.name}: {code} {t} 的 weight_pct 無法解析: {r.get('weight_pct')!r}")
             if t in rows.setdefault(code, {}):
                 raise ValueError(f"{path.name}: {code} 的 {t} 重複")
-            rows[code][t] = w[0] / 100.0
+            rows[code][t] = w / 100.0
     for code, h in rows.items():
         if len(h) < ACTIVE_SHARE_TOP_N:
             raise ValueError(f"{path.name}: {code} 只填了 {len(h)} 檔，需要 {ACTIVE_SHARE_TOP_N} 檔")
@@ -282,30 +254,31 @@ def top10_path(day: date | str, base: Path | None = None) -> Path:
 
 
 def update(day: date | str, base: Path | None = None, raw_dir: Path | None = None,
-           sources: dict[str, dict] | None = None, session: requests.Session | None = None) -> dict:
+           sources: dict[str, dict] | None = None, session: requests.Session | None = None,
+           ref_date: date | None = None, sleep: float = 0.0) -> dict:
     """抓取 + 合併手動檔（base/manual.csv，若存在）+ 存檔；缺漏者產生 base/manual_template.csv。
-    回傳 fetch_all 的結果，並加上 manual（由手動檔補上的 ETF）；missing 為補完後仍缺的。"""
+    手動補的 ETF 資料日期記為 "manual"（無法驗證新舊，請自行確認）。"""
     base = base or ETF_TOP10_DIR
-    res = fetch_all(day, raw_dir, sources, session)
+    res = fetch_all(day, raw_dir, sources, session, ref_date, sleep)
     manual_path = base / MANUAL_FILENAME
     manual = load_manual(manual_path) if manual_path.exists() else {}
-    res["manual"] = sorted(manual)
-    for code, h in manual.items():
-        if code in res["overseas"]:
-            continue
-        res["top10"][code] = h
+    res["manual"] = sorted(c for c in manual if c not in res["overseas"])
+    for code in res["manual"]:
+        res["top10"][code] = manual[code]
+        res["data_dates"][code] = MANUAL_DATA_DATE
         res["missing"].pop(code, None)
+        res["stale"].pop(code, None)
+    out = {"as_of": res["date"], "ref_date": res["ref_date"], "data_dates": res["data_dates"],
+           "top10": res["top10"], "overseas": res["overseas"], "stale": res["stale"]}
     p = top10_path(res["date"], base)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(res["top10"], ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
+    p.write_text(json.dumps(out, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
     if res["missing"]:
         res["template"] = str(write_manual_template(sorted(res["missing"]), base / TEMPLATE_FILENAME))
     return res
 
 
-def load_top10(day: date | str | None = None, base: Path | None = None) -> dict[str, dict[str, float]]:
-    """讀取 {etf_code: {ticker: weight}}；day=None 取最新一份。手動檔（manual.csv）會覆蓋同代號。"""
-    base = base or ETF_TOP10_DIR
+def _read(day: date | str | None, base: Path) -> dict:
     if day is None:
         files = sorted(base.glob("????-??-??.json"))
         if not files:
@@ -313,11 +286,22 @@ def load_top10(day: date | str | None = None, base: Path | None = None) -> dict[
         p = files[-1]
     else:
         p = top10_path(day, base)
-    data = json.loads(p.read_text(encoding="utf-8"))
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def load_top10(day: date | str | None = None, base: Path | None = None) -> dict[str, dict[str, float]]:
+    """讀取 {etf_code: {ticker: weight}}；day=None 取最新一份。手動檔（manual.csv）會覆蓋同代號。"""
+    base = base or ETF_TOP10_DIR
+    data = _read(day, base)["top10"]
     mp = base / MANUAL_FILENAME
     if mp.exists():
         data.update(load_manual(mp))
     return data
+
+
+def load_data_dates(day: date | str | None = None, base: Path | None = None) -> dict[str, str]:
+    """{etf_code: 資料日期 'YYYY-MM-DD' 或 'manual'}。"""
+    return _read(day, base or ETF_TOP10_DIR)["data_dates"]
 
 
 # --------------------------------------------------------------------------- Active Share 串接

@@ -1,5 +1,6 @@
 import csv
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -7,101 +8,107 @@ import pytest
 from esun_agent.data import etf_holdings as eh
 
 FX = Path(__file__).parent / "fixtures" / "etf"
-EXPECTED = {"2330": 0.095, "2454": 0.081, "2317": 0.062, "2308": 0.055, "2383": 0.05,
-            "3017": 0.044, "2382": 0.041, "3231": 0.038, "2345": 0.033, "3443": 0.03}
+EXPECTED = {"2330": 0.095, "2327": 0.081, "LITE.US": 0.062, "009150.KS": 0.055, "2454": 0.05,
+            "2317": 0.044, "2308": 0.041, "2382": 0.038, "2345": 0.033, "3443": 0.03}
 
 
 def read(name):
-    return (FX / name).read_text(encoding="utf-8-sig")
+    return (FX / name).read_text(encoding="utf-8")
 
 
-def test_parse_ticker_and_weight():
-    assert eh.parse_ticker("2330 台積電") == "2330" and eh.parse_ticker("2330.TW") == "2330"
-    assert eh.parse_ticker("00981A") == "00981A" and eh.parse_ticker("現金") is None
-    assert eh.parse_weight("8.52%") == (8.52, True) and eh.parse_weight("1,234") == (1234.0, False)
-    assert eh.parse_weight("--") is None
+def test_parse_holding_name():
+    p = eh.parse_holding_name
+    assert p("台積電(2330.TW)") == "2330" and p("國巨*(2327.TW)") == "2327"
+    assert p("Lumentum(LITE.US)") == "LITE.US" and p("Samsung Elec Mech(009150.KS)") == "009150.KS"
+    assert p("X(00679B.TW)") == "00679B.TW"  # .TW 但非 4 位數 → 保留原字串
+    assert p("現金") is None and p("") is None
 
 
-def test_parse_html_json_csv_agree():
-    assert eh.parse_html(read("issuer_a.html"), "a") == EXPECTED   # 略過第一個無關表格、「現金」列、第 11 名
-    assert eh.parse_json(json.loads(read("issuer_b.json")), "b") == EXPECTED
-    assert eh.parse_csv_text(read("issuer_c.csv"), "c") == EXPECTED  # 無代號欄 → 用名稱反查 150 檔
+def test_parse_moneydj_sample():
+    r = eh.parse_moneydj(read("moneydj_sample.html"), "00981A")
+    # 取「持股明細」區塊的 10/05，而不是頁面上更早出現的另一個「資料日期」(10/01)
+    assert r["data_date"] == "2026-10-05"
+    assert r["holdings"] == EXPECTED
 
 
-def test_fraction_weights_not_rescaled():
-    rows = [{"代號": str(2000 + i), "權重": 0.05} for i in range(12)]
-    assert set(eh.normalize_rows(rows).values()) == {0.05}
+def test_parse_moneydj_failures():
+    with pytest.raises(ValueError, match="只解析出 4 檔"):
+        eh.parse_moneydj(read("moneydj_short.html"), "x")
+    with pytest.raises(ValueError, match="沒有「持股明細」"):
+        eh.parse_moneydj(read("moneydj_nodetail.html"), "x")
 
 
-def test_parse_failures_raise():
-    with pytest.raises(ValueError, match="找不到持股表格"):
-        eh.parse_html(read("issuer_bad.html"), "bad")
-    with pytest.raises(ValueError, match="只解析出"):
-        eh.normalize_rows([{"代號": "2330", "權重": "5%"}] * 3, "few")
-    with pytest.raises(ValueError, match="找不到代號"):
-        eh.normalize_rows([{"foo": 1, "bar": 2}], "x")
-    with pytest.raises(ValueError):
-        eh.parse_json({"a": 1}, "j")
-
-
-def test_sources_file_covers_30_etfs_and_flags_overseas():
+def test_sources_file():
     src = eh.load_sources()
     assert len(src) == 30
-    assert {c for c, s in src.items() if s["overseas"]} == {"00983A", "00989A", "00988A", "00997A",
-                                                           "00402A", "00409A"}
+    assert {c for c, s in src.items() if s["overseas"]} == {"00989A", "00997A", "00402A"}
+    # 全球型但持有台股者不可跳過
+    assert not any(src[c]["overseas"] for c in ("00983A", "00988A", "00409A"))
+    assert src["00981A"]["url"] == "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid=00981A.TW"
 
 
 class Resp:
-    def __init__(self, text): self.text, self.encoding = text, "utf-8"
+    def __init__(self, text):
+        self.text, self.encoding = text, "ISO-8859-1"
     def raise_for_status(self): pass
 
 
 class Sess:
     headers = {}
-    def __init__(self, pages): self.pages = pages
+    def __init__(self, pages): self.pages, self.resps = pages, []
     def get(self, url, timeout=None):
         if url not in self.pages:
             raise ConnectionError("blocked")
-        return Resp(self.pages[url])
+        r = Resp(self.pages[url])
+        self.resps.append(r)
+        return r
 
 
 SOURCES = {
-    "00981A": {"issuer": "a", "overseas": False, "format": "html", "url": "http://a"},
-    "00980A": {"issuer": "b", "overseas": False, "format": "json", "url": "http://b"},
-    "00985A": {"issuer": "c", "overseas": False, "format": "csv", "url": "http://c"},
-    "00984A": {"issuer": "d", "overseas": False, "format": "html", "url": "http://bad"},
-    "00982A": {"issuer": "e", "overseas": False, "format": "", "url": ""},
-    "00989A": {"issuer": "f", "overseas": True, "format": "", "url": ""},
+    "00981A": {"overseas": False, "url": "http://a"},   # 資料日期 10/05（新）
+    "00988A": {"overseas": False, "url": "http://old"},  # 資料日期 10/02（舊）
+    "00984A": {"overseas": False, "url": "http://short"},
+    "00982A": {"overseas": False, "url": "http://down"},
+    "00989A": {"overseas": True, "url": "http://x"},
 }
-PAGES = {"http://a": read("issuer_a.html"), "http://b": read("issuer_b.json"),
-         "http://c": read("issuer_c.csv"), "http://bad": read("issuer_bad.html")}
+PAGES = {"http://a": read("moneydj_sample.html"), "http://old": read("moneydj_old.html"),
+         "http://short": read("moneydj_short.html")}
+REF = date(2026, 10, 6)
 
 
-def test_fetch_all_isolates_failures_and_saves_raw(tmp_path):
-    res = eh.fetch_all("2026-10-06", tmp_path / "raw", SOURCES, Sess(PAGES))
-    assert sorted(res["top10"]) == ["00980A", "00981A", "00985A"]
+def test_fetch_all(tmp_path):
+    s = Sess(PAGES)
+    res = eh.fetch_all("2026-10-06", tmp_path / "raw", SOURCES, s, ref_date=REF)
+    assert all(r.encoding == "utf-8" for r in s.resps)
+    assert sorted(res["top10"]) == ["00981A", "00988A"]
+    assert res["data_dates"] == {"00981A": "2026-10-05", "00988A": "2026-10-02"}
     assert res["overseas"] == ["00989A"]
-    assert set(res["missing"]) == {"00984A", "00982A"}
-    assert "找不到持股表格" in res["missing"]["00984A"] and "尚未填" in res["missing"]["00982A"]
+    assert set(res["missing"]) == {"00984A", "00982A"} and "只解析出" in res["missing"]["00984A"]
+    assert res["stale"] == {"00988A": 4}  # 10/06 − 10/02 = 4 天 > 3
     assert (tmp_path / "raw" / "etf_00981A_2026-10-06.html").exists()
 
 
-def test_update_writes_json_template_and_merges_manual(tmp_path):
-    res = eh.update("2026-10-06", tmp_path, sources=SOURCES, session=Sess(PAGES))
+def test_stale_boundary():
+    res = eh.fetch_all("2026-10-05", None, {"00988A": SOURCES["00988A"]}, Sess(PAGES), ref_date=date(2026, 10, 5))
+    assert res["stale"] == {}  # 剛好 3 天不警告
+
+
+def test_update_json_template_manual(tmp_path):
+    res = eh.update("2026-10-06", tmp_path, sources=SOURCES, session=Sess(PAGES), ref_date=REF)
     saved = json.loads((tmp_path / "2026-10-06.json").read_text(encoding="utf-8"))
-    assert sorted(saved) == ["00980A", "00981A", "00985A"] and saved["00981A"] == EXPECTED
-    tpl = tmp_path / "manual_template.csv"
-    rows = list(csv.DictReader(tpl.open(encoding="utf-8-sig")))
+    assert saved["data_dates"]["00988A"] == "2026-10-02" and saved["stale"] == {"00988A": 4}
+    assert saved["top10"]["00981A"] == EXPECTED and saved["overseas"] == ["00989A"]
+    rows = list(csv.DictReader((tmp_path / "manual_template.csv").open(encoding="utf-8-sig")))
     assert len(rows) == 20 and {r["etf_code"] for r in rows} == {"00984A", "00982A"}
-    # 使用者填 00984A 後存成 manual.csv，再跑一次就不再缺
     with open(tmp_path / "manual.csv", "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(eh.MANUAL_COLUMNS)
         for i, (t, wt) in enumerate(EXPECTED.items(), 1):
             w.writerow(["00984A", "", i, t, wt * 100])
-    res = eh.update("2026-10-06", tmp_path, sources=SOURCES, session=Sess(PAGES))
+    res = eh.update("2026-10-06", tmp_path, sources=SOURCES, session=Sess(PAGES), ref_date=REF)
     assert res["manual"] == ["00984A"] and set(res["missing"]) == {"00982A"}
     assert eh.load_top10(None, tmp_path)["00984A"] == pytest.approx(EXPECTED)
+    assert eh.load_data_dates(None, tmp_path)["00984A"] == "manual"
 
 
 def test_manual_validation(tmp_path):
@@ -123,11 +130,10 @@ def test_check_target_weights_pass_and_fail():
     r = eh.check_target_weights(far, ETF, expected_etfs=["00981A"])
     assert r["ok"] and r["safe"] and r["complete"] and not r["fails"]
 
-    copy = dict(EXPECTED)
-    r = eh.check_target_weights(copy, ETF, expected_etfs=["00981A"])
+    r = eh.check_target_weights(dict(EXPECTED), ETF, expected_etfs=["00981A"])
     assert not r["ok"] and r["fails"][0]["etf"] == "00981A"
     f = r["fails"][0]
-    assert f["overlap_tickers"][0]["ticker"] == "2330"  # 重疊最大者排最前
+    assert f["overlap_tickers"][0]["ticker"] == "2330"
     assert f["needed_cut"] == pytest.approx(0.2, abs=1e-3)
 
 
