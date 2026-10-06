@@ -21,7 +21,8 @@ def test_parse_holding_name():
     assert p("台積電(2330.TW)") == "2330" and p("國巨*(2327.TW)") == "2327"
     assert p("Lumentum(LITE.US)") == "LITE.US" and p("Samsung Elec Mech(009150.KS)") == "009150.KS"
     assert p("X(00679B.TW)") == "00679B.TW"  # .TW 但非 4 位數 → 保留原字串
-    assert p("現金") is None and p("") is None
+    assert p("英飛凌科技股份有限公司") == "英飛凌科技股份有限公司"  # 無括號代號 → 完整名稱
+    assert p("") is None and p(None) is None
 
 
 def test_parse_moneydj_sample():
@@ -173,3 +174,18 @@ def test_real_00988A_global_keeps_non_tw_symbols():
     assert h["LITE.US"] == 0.0747 and h["009150.KS"] == 0.0481 and h["6981.JP"] == 0.0426
     assert h["3037"] == 0.0626 and h["2454"] == 0.0347  # 持有的台股仍轉成 4 位代號
     assert sum(1 for t in h if t.isdigit() and len(t) == 4) == 2
+
+
+def test_row_without_bracket_code_is_kept_as_name():
+    # 00986A 情境：第 10 列「英飛凌科技股份有限公司|3.15|8,000.00」沒有括號代號
+    html = read("moneydj_sample.html")
+    body = "".join(f'<tr><td><a href="#">{n}</a></td><td>{w:.2f}</td><td>1,000</td></tr>'
+                   for n, w in [("台積電(2330.TW)", 9.5), ("國巨*(2327.TW)", 8.1), ("聯發科(2454.TW)", 5.0),
+                                ("鴻海(2317.TW)", 4.4), ("台達電(2308.TW)", 4.1), ("廣達(2382.TW)", 3.8),
+                                ("智邦(2345.TW)", 3.3), ("創意(3443.TW)", 3.0), ("欣興(3037.TW)", 2.5),
+                                ("英飛凌科技股份有限公司", 3.15)])
+    start, end = html.index("<tbody>") + 7, html.index("</tbody>")
+    r = eh.parse_moneydj(html[:start] + body + html[end:], "00986A")
+    assert len(r["holdings"]) == 10
+    assert r["holdings"]["英飛凌科技股份有限公司"] == 0.0315
+    assert r["holdings"]["2330"] == 0.095

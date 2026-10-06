@@ -44,10 +44,14 @@ MANUAL_DATA_DATE = "manual"
 
 def parse_holding_name(cell: str) -> str | None:
     """'台積電(2330.TW)' → '2330'；'Lumentum(LITE.US)' → 'LITE.US'；'009150.KS' 同理保留原字串。
-    .TW 但不是 4 位純數字（如 00679B.TW）也保留原字串。沒有括號代號（現金等）回傳 None。"""
-    m = re.search(r"\(([^()\s]+)\)\s*$", str(cell or "").strip())
-    if not m:
+    .TW 但不是 4 位數（如 00679B.TW）也保留原字串。沒有括號代號（如「英飛凌科技股份有限公司」）
+    → 用完整名稱當識別字（視為非台股），不丟棄該列。名稱為空回傳 None。"""
+    name = re.sub(r"\s+", " ", str(cell or "")).strip()
+    if not name:
         return None
+    m = re.search(r"\(([^()\s]+)\)\s*$", name)
+    if not m:
+        return name
     code = m.group(1).upper()
     m2 = re.fullmatch(r"(\d{4})\.TW", code)
     return m2.group(1) if m2 else code
@@ -104,7 +108,7 @@ def parse_moneydj(html: str, what: str = "") -> dict:
     """解析 MoneyDJ 持股明細頁 → {"data_date": "YYYY-MM-DD", "holdings": {ticker: weight(小數)}}。
 
     找「持股明細」之後的每個「資料日期」，若其後緊接的第一個表格表頭含「個股名稱」與「投資比例」，即為持股表。
-    有效列（名稱帶括號代號且比例可解析）少於 10 → ValueError；多於 10 取權重前 10 大。
+    有效列（名稱非空且比例可解析）少於 10 → ValueError；多於 10 取權重前 10 大。
     """
     marker = html.find("持股明細")
     if marker < 0:
