@@ -1,0 +1,67 @@
+{
+ "result": {
+  "fundCode": "X",
+  "stockList": [
+   {
+    "stockNo": "2330 TT",
+    "stockName": "台積電",
+    "weight": 9.5
+   },
+   {
+    "stockNo": "2454 TT",
+    "stockName": "聯發科",
+    "weight": 8.1
+   },
+   {
+    "stockNo": "2317 TT",
+    "stockName": "鴻海",
+    "weight": 6.2
+   },
+   {
+    "stockNo": "2308 TT",
+    "stockName": "台達電",
+    "weight": 5.5
+   },
+   {
+    "stockNo": "2383 TT",
+    "stockName": "台光電",
+    "weight": 5.0
+   },
+   {
+    "stockNo": "3017 TT",
+    "stockName": "奇鋐",
+    "weight": 4.4
+   },
+   {
+    "stockNo": "2382 TT",
+    "stockName": "廣達",
+    "weight": 4.1
+   },
+   {
+    "stockNo": "3231 TT",
+    "stockName": "緯創",
+    "weight": 3.8
+   },
+   {
+    "stockNo": "2345 TT",
+    "stockName": "智邦",
+    "weight": 3.3
+   },
+   {
+    "stockNo": "3443 TT",
+    "stockName": "創意",
+    "weight": 3.0
+   },
+   {
+    "stockNo": "2881 TT",
+    "stockName": "富邦金",
+    "weight": 2.0
+   },
+   {
+    "stockNo": "",
+    "stockName": "",
+    "weight": 1.5
+   }
+  ]
+ }
+}
