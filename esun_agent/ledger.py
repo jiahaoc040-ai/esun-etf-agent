@@ -17,6 +17,8 @@ class Ledger:
     cash: float = float(INITIAL_CAPITAL)
     holdings: dict[str, int] = field(default_factory=dict)     # ticker -> 股數
     as_of: str | None = None                                    # 最後結算日 YYYY-MM-DD
+    fee_rate: float = FEE_RATE                                  # 預設為官方費率；歸因分析可設 0 做「免費用」對照
+    tax_rate: float = TAX_RATE
 
     # ---- 成交 ----
     def apply_fills(self, orders: list[dict], avg_price: dict[str, float]) -> dict:
@@ -25,11 +27,11 @@ class Ledger:
         for o in sorted(orders, key=lambda o: o["side"] != "SELL"):
             t, n = o["ticker"], o["shares"]
             amt = n * avg_price[t]
-            fee = amt * FEE_RATE
+            fee = amt * self.fee_rate
             if o["side"] == "SELL":
                 if n > self.holdings.get(t, 0):
                     raise ValueError(f"超賣 {t}: 賣 {n} > 持有 {self.holdings.get(t, 0)}")
-                tax = amt * TAX_RATE
+                tax = amt * self.tax_rate
                 self.cash += amt - fee - tax
                 self.holdings[t] -= n
                 if self.holdings[t] == 0:

@@ -67,6 +67,7 @@ class BacktestResult:
         s["viol_weight"] = int(d["v_weight"].sum())
         s["viol_cash"] = int(d["v_cash"].sum())
         s["ap_fail_days"] = int((~d["ap_ok"]).sum())
+        s["ap_min"] = float(d["ap_min"].min()) if len(d) else math.nan
         costs = float(d["fee"].sum() + d["tax"].sum())
         nav = self.period(start, end)
         pnl = float(nav.iloc[-1] - nav.iloc[0])
@@ -100,16 +101,17 @@ def equal_weight_benchmark(panel: Panel, start: str | None = None, end: str | No
     return out[~out.index.duplicated()]
 
 
-def _reject_unaffordable_buys(fills: list[dict], avg: dict[str, float], cash: float) -> list[dict]:
+def _reject_unaffordable_buys(fills: list[dict], avg: dict[str, float], cash: float,
+                              fee_rate: float = FEE_RATE, tax_rate: float = TAX_RATE) -> list[dict]:
     """模擬券商「餘額不足拒絕委託」：賣出先入帳，若買進後現金 < 0，由金額最大的買單開始拒絕，直到不透支。"""
-    sells = sum(o["shares"] * avg[o["ticker"]] * (1 - FEE_RATE - TAX_RATE) for o in fills if o["side"] == "SELL")
+    sells = sum(o["shares"] * avg[o["ticker"]] * (1 - fee_rate - tax_rate) for o in fills if o["side"] == "SELL")
     buys = sorted((o for o in fills if o["side"] == "BUY"), key=lambda o: -o["shares"] * avg[o["ticker"]])
-    need = sum(o["shares"] * avg[o["ticker"]] * (1 + FEE_RATE) for o in buys)
+    need = sum(o["shares"] * avg[o["ticker"]] * (1 + fee_rate) for o in buys)
     rejected = []
     for o in buys:
         if cash + sells - need >= 0:
             break
-        need -= o["shares"] * avg[o["ticker"]] * (1 + FEE_RATE)
+        need -= o["shares"] * avg[o["ticker"]] * (1 + fee_rate)
         rejected.append(o)
     return rejected
 
@@ -137,7 +139,7 @@ def cap_weight_benchmark(panel: Panel, caps: pd.DataFrame, start: str | None = N
 def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = None,
                  top10: dict[str, dict[str, float]] | None = None, start: str | None = None,
                  end: str | None = None, capital: float = INITIAL_CAPITAL,
-                 caps: pd.DataFrame | None = None) -> BacktestResult:
+                 caps: pd.DataFrame | None = None, cost_free: bool = False) -> BacktestResult:
     """start/end 為「交易日 T」的範圍。第一個可交易日至少是第 MIN_HISTORY+1 個資料日（因子暖機）。"""
     factors = factors if factors is not None else compute_factors(panel)
     caps = caps if caps is not None else market_cap(panel)[0]
@@ -146,7 +148,7 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
     last = len(dates) - 1 if end is None else max(i for i, d in enumerate(dates) if d <= end)
     top10_ap = top10 or None
 
-    led = Ledger(cash=float(capital))
+    led = Ledger(cash=float(capital), fee_rate=0.0 if cost_free else FEE_RATE, tax_rate=0.0 if cost_free else TAX_RATE)
     last_close: dict[str, float] = {}
     nav_pts = {dates[first - 1]: float(capital)}
     rows, unfilled, rejected_buys = [], 0, 0
@@ -167,7 +169,8 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
 
         # --- 決策（只用 D 日以前資料）；非再平衡日不產生委託（D-Plan 上全部是 no_trade）
         orders = []
-        if (i - first) % strat.rebalance_every == 0:
+        guard = getattr(strat, "force_rebalance", None)
+        if (i - first) % strat.rebalance_every == 0 or (guard is not None and guard(cur_w, top10_ap)):
             res = strat.decide(factors_on(factors, D), caps.loc[D], cur_w, top10_ap)
             tickers = sorted(set(res.weights) | set(led.holdings))
             decisions = [{"ticker": t, "target_weight": res.weights.get(t, 0.0), "decision_id": f"D{n}"}
@@ -184,7 +187,7 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
                 continue
             fills.append({"ticker": o.ticker, "side": o.side, "shares": o.shares})
         avg_d = {o["ticker"]: float(avg[o["ticker"]]) for o in fills}
-        rejected = _reject_unaffordable_buys(fills, avg_d, led.cash)
+        rejected = _reject_unaffordable_buys(fills, avg_d, led.cash, led.fee_rate, led.tax_rate)
         fills = [o for o in fills if o not in rejected]
         rejected_buys += len(rejected)
         cost = led.apply_fills(fills, avg_d)
@@ -196,16 +199,17 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
         nav = float(led.nav({t: last_close[t] for t in led.holdings}))
         w = {t: n * last_close[t] / nav for t, n in led.holdings.items()}
         cash_ratio = led.cash / nav
-        ap_ok = True
+        ap_ok, ap_min = True, float("nan")
         if top10_ap and w:
-            ap_ok = bool(check_target_weights(w, top10_ap, margin=0.0, expected_etfs=list(top10_ap))["ok"])
+            ap = check_target_weights(w, top10_ap, margin=0.0, expected_etfs=list(top10_ap))
+            ap_ok, ap_min = bool(ap["ok"]), float(ap["min"])
         rows.append({
             "date": T, "nav": nav, "cash_ratio": cash_ratio, "n_hold": len(w),
             "max_w": max(w.values()) if w else 0.0, "tsmc_w": w.get("2330", 0.0),
             "turnover": traded / 2 / prev_nav, "fee": cost["fee"], "tax": cost["tax"], "n_orders": len(fills),
             "v_holdings": int(not (MIN_HOLDINGS <= len(w) <= MAX_HOLDINGS)),
             "v_weight": int(any(x > max_weight(t) + 1e-12 for t, x in w.items())),
-            "v_cash": int(cash_ratio < 0 or cash_ratio >= CASH_MAX), "ap_ok": ap_ok,
+            "v_cash": int(cash_ratio < 0 or cash_ratio >= CASH_MAX), "ap_ok": ap_ok, "ap_min": ap_min,
         })
         nav_pts[T] = nav
     daily = pd.DataFrame(rows).set_index("date")

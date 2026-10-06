@@ -159,6 +159,49 @@ def fit_active_share(weights: dict[str, float], scores: pd.Series, top10: dict[s
     return w, res
 
 
+def fit_active_share_minimal(weights: dict[str, float], top10: dict[str, dict[str, float]] | None,
+                             p: PortfolioParams, max_names: int = 3, pool_from: int = 10, pool_to: int = 28,
+                             floor_ratio: float = 0.5) -> tuple[dict[str, float], dict | None]:
+    """最小 Active Share 調整：只動「造成重疊最大」的 1–3 檔（max_names），每次把該檔權重乘 0.8，
+    釋出的權重分給權重排名第 pool_from+1～pool_to 名（預設第 11–28 名、且不在失敗 ETF 前 10 大）的標的，
+    而不是像 fit_active_share 那樣讓所有名單外標的一起吸收。單檔最多降到原權重的 floor_ratio；
+    已動過的檔數達上限、且它們都到下限時就停止（可能仍未通過，呼叫端看回傳的檢查結果）。"""
+    if not top10:
+        return weights, None
+    w = dict(weights)
+    orig = dict(weights)
+    order = sorted(w, key=lambda t: (-w[t], t))
+    pool = order[pool_from:pool_to]
+    touched: list[str] = []
+    res = check_target_weights(w, top10, margin=p.ap_margin, expected_etfs=list(top10))
+    for _ in range(p.ap_max_iter):
+        bad = res["fails"] + res["warnings"]
+        if not bad:
+            break
+        worst = min(bad, key=lambda x: x["min"])
+        ov = [o["ticker"] for o in worst["overlap_tickers"]]
+        alive = lambda t: w.get(t, 0) > floor_ratio * orig.get(t, 0) + 1e-12      # noqa: E731
+        victim = next((t for t in ov if t in touched and alive(t)), None)
+        if victim is None and len(touched) < max_names:
+            victim = next((t for t in ov if t not in touched and w.get(t, 0) > 0), None)
+        if victim is None:
+            break
+        if victim not in touched:
+            touched.append(victim)
+        cut = min(w[victim] * 0.2, w[victim] - floor_ratio * orig[victim])
+        recv = {t: w[t] for t in pool if t not in ov and t not in touched and 0 < w[t] < cap_of(t, p) - 1e-9}
+        if not recv:
+            break
+        tot, spill = sum(recv.values()), 0.0
+        for t, x in recv.items():
+            add = min(cut * x / tot, cap_of(t, p) - x)
+            w[t] = x + add
+            spill += add
+        w[victim] -= spill                    # 只扣掉真的被吸收的部分，現金不因此暴增
+        res = check_target_weights(w, top10, margin=p.ap_margin, expected_etfs=list(top10))
+    return w, res
+
+
 # --------------------------------------------------------------------------- 總成
 
 @dataclass
@@ -171,9 +214,14 @@ class PortfolioResult:
 
 
 def finalize_weights(target: dict[str, float], current: dict[str, float], p: PortfolioParams,
-                     top10: dict[str, dict[str, float]] | None, selected: list[str]) -> PortfolioResult:
-    """目標權重 → Active Share 修正 → 無交易帶（若讓 Active Share 不過則放棄無交易帶）。"""
-    target, ap = fit_active_share(target, None, top10, p)
+                     top10: dict[str, dict[str, float]] | None, selected: list[str],
+                     minimal_ap: bool = False) -> PortfolioResult:
+    """目標權重 → Active Share 修正 → 無交易帶（若讓 Active Share 不過則放棄無交易帶）。
+    minimal_ap=True 時用 fit_active_share_minimal（只動 1–3 檔），否則用 fit_active_share（全面壓低重疊）。"""
+    if minimal_ap:
+        target, ap = fit_active_share_minimal(target, top10, p)
+    else:
+        target, ap = fit_active_share(target, None, top10, p)
     banded = apply_no_trade_band(target, current, p)
     notes = []
     if banded != target:

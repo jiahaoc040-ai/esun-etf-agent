@@ -17,11 +17,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from esun_agent.attribution import LADDER, attribution_ladder  # noqa: E402
 from esun_agent.backtest import (cap_weight_benchmark, equal_weight_benchmark, perf, run_backtest,  # noqa: E402
                                  window_returns)
 from esun_agent.config import ROOT  # noqa: E402
 from esun_agent.data.etf_holdings import load_top10  # noqa: E402
 from esun_agent.data.prices import load_panel  # noqa: E402
+from esun_agent.strategy.compliance import ComplianceBenchmark, ComplianceParams  # noqa: E402
 from esun_agent.strategy.core_satellite import CoreSatellite, CoreSatelliteParams  # noqa: E402
 from esun_agent.strategy.factors import compute_factors  # noqa: E402
 from esun_agent.strategy.marketcap import market_cap  # noqa: E402
@@ -201,6 +203,73 @@ def main(argv=None) -> int:
 6. **模型假設**：均價成交、無市場衝擊、不含股利（官方期末加回，回測偏低估）；Active Share 用 2026-10-06 的 ETF 前 10 大靜態快照，歷史上不同，只是近似；衛星因子（投信買超、動能）在擁擠交易反轉時會同時失靈。
 7. **上線門檻建議**：以「樣本外超額報酬（兩個基準）為正、年換手與費用拖累可接受、違規 = 0」為準，不要以回測報酬調參；實盤前 22 天是第二次樣本外檢驗。
 """)
+    # ------------------------------------------------------------------ 5. 績效歸因
+    L.append("## 5. 績效歸因（樣本外 2026-08-01 起）\n")
+    L.append("把「策略 − (b)」的落後沿一條階梯逐項拆開：每一階是一次完整回測（從起始日連續跑），只改一個因素，"
+             "樣本外報酬的相鄰差 = 該因素的貢獻，加總恰好等於總落後（無殘差）。P0–P5 為紙上組合（權重 × 還原報酬、無費用、可分割股數），"
+             "P6、P7 才是實際撮合（T−1 決策、T 日均價、整股）。\n")
+    ladders = {}
+    for s_ in strategies:
+        print("attribution", s_.name, file=sys.stderr)
+        ladders[s_.name] = attribution_ladder(panel, factors, caps, top10, s_.params, OOS_START, s_.name)
+    A_sel = ladders[best["name"]]
+    L.append(f"### 選定組合 `{best['name']}`\n")
+    L.append("| 階 | 因素 | 該階樣本外報酬 | 本因素貢獻（pp） |")
+    L.append("|---|---|---|---|")
+    for r_ in A_sel["rungs"]:
+        step = "—" if r_["step"] is None else f"{r_['step'] * 100:+.2f}"
+        L.append(f"| {r_['code']} | {r_['label']} | {pct(r_['oos'], 2)} | {step} |")
+    tot = A_sel["total"]
+    L.append(f"| 合計 | 策略 − (b) | {pct(A_sel['rungs'][-1]['oos'], 2)} − {pct(A_sel['rungs'][0]['oos'], 2)} | **{tot * 100:+.2f}** |")
+    sv = A_sel["sat"]
+    L.append(f"\n**衛星拖累的來源**（P2、每日再平衡無摩擦、樣本外 {sv['days']} 天，各部位以自身權重加權）：核心部位 {pct(sv['core'])}、"
+             f"衛星部位 {pct(sv['sat'])}、「衛星候選池等權」（核心以外且因子齊全、流動性合格的全部股票）{pct(sv['pool_ew'])}。"
+             f"衛星選出的股票樣本外不但輸給核心，也輸給候選池的平均。一階近似（衛星權重 35%）：衛星選股 vs 候選池 ≈ "
+             f"0.35 × ({pct(sv['sat'])} − {pct(sv['pool_ew'])}) = {0.35 * (sv['sat'] - sv['pool_ew']) * 100:+.1f}pp；"
+             f"把 35% 資金從核心換到候選池平均 ≈ 0.35 × ({pct(sv['pool_ew'])} − {pct(sv['core'])}) = {0.35 * (sv['pool_ew'] - sv['core']) * 100:+.1f}pp；"
+             f"兩者相加約 {0.35 * (sv['sat'] - sv['core']) * 100:+.1f}pp，對應上表 (4) 的 {A_sel['rungs'][2]['step'] * 100:+.1f}pp。即落後幾乎全來自衛星選股本身。\n")
+    L.append("### 8 組參數的歸因（單位 pp，樣本外）\n")
+    heads = ["(3) 核心涵蓋", "(4) 衛星", "(5) 現金", "(6a) 再平衡/帶", "(2) Active Share", "(6b) 時間差", "(1) 費用", "合計"]
+    L.append("| 組合 | " + " | ".join(heads) + " |")
+    L.append("|---|" + "---|" * len(heads))
+    for s_ in strategies:
+        A_ = ladders[s_.name]
+        steps = [r_["step"] for r_ in A_["rungs"][1:]]
+        L.append(f"| {s_.name} | " + " | ".join(f"{x * 100:+.2f}" for x in steps) + f" | {A_['total'] * 100:+.2f} |")
+    L.append("")
+
+    # ------------------------------------------------------------------ 6. 合規對照組 A / B
+    L.append("## 6. 合規對照組 A／B（樣本外）\n")
+    L.append("- **A 合規基準**：用 (b) 的權重取前 28 檔重新歸一（單檔再套 2330 ≤ 20%、其他 ≤ 8%），不加衛星；現金 3%；每 5 日再平衡、無交易帶 2%；"
+             "Active Share 修正 = 既有做法（全面壓低重疊最大者）。")
+    L.append("- **B 合規基準＋最小 Active Share 調整**：同 A，但 Active Share 修正只動造成重疊最大的 1–3 檔，並把減下來的權重分給權重排名第 11–28 名（且不在該 ETF 前 10 大）的標的。")
+    L.append("- A、B 另有「漂移保護」：前日收盤的現權重逼近官方上限（2330 > 24%、其他 > 9.5%）或 Active Share < 20.5% 時，不等 5 日週期、當天提前再平衡；"
+             "Active Share 緩衝用 3%（核心＋衛星用 2%）。選定組合沒有漂移保護，維持原規格。\n")
+    comp = {}
+    for nm, mode in (("A 合規基準", "full"), ("B 合規基準＋最小 AS 調整", "minimal")):
+        comp[nm] = run_backtest(panel, ComplianceBenchmark(nm, ComplianceParams(ap_mode=mode, ap_margin=0.03)), factors, top10, caps=caps)
+    comp[f"選定組合 {best['name']}"] = br
+    L.append("| 組合 | OOS 報酬 | 超額 vs (a) 等權 | 超額 vs (b) 市值上限 | OOS MDD | Active Share 最低值（OOS／全期間） | OOS 年換手 | 年化費用拖累 | 違規次數（全期間） |")
+    L.append("|---|---|---|---|---|---|---|---|---|")
+    for nm, r_ in comp.items():
+        o_ = r_.summary(OOS_START, None)
+        ap_all = float(r_.daily["ap_min"].min())
+        L.append(f"| {nm} | {pct(o_['total_return'])} | {pct(o_['total_return'] - b_ew['oos'])} | {pct(o_['total_return'] - b_cw['oos'])} | "
+                 f"{pct(o_['mdd'])} | {ppct(o_['ap_min'])} ／ {ppct(ap_all)} | {o_['turnover_ann']:.1f}x | {ppct(o_['cost_drag_ann'])} | "
+                 f"{sum(r_.violations.values())}（Active Share 不足 {int((~r_.daily['ap_ok']).sum())} 天） |")
+    L.append(f"| 基準 (a) 150 檔等權 | {pct(b_ew['oos'])} | — | — | {pct(ew_perf['oos']['mdd'])} | — | — | — | — |")
+    L.append(f"| 基準 (b) 市值加權上限 | {pct(b_cw['oos'])} | — | — | {pct(cw_perf['oos']['mdd'])} | — | — | — | — |")
+    L.append("")
+    ra, rb = comp["A 合規基準"].summary(OOS_START, None), comp["B 合規基準＋最小 AS 調整"].summary(OOS_START, None)
+    ex_a, ex_b = ra["total_return"] - b_cw["oos"], rb["total_return"] - b_cw["oos"]
+    L.append(f"**結論**：只要不加衛星，合規（20–30 檔、權重上限、Active Share ≥ 20%）的組合可以貼近 (b)——A 樣本外 {pct(ra['total_return'])}"
+             f"（相對 (b) {ex_a * 100:+.1f}pp）、B {pct(rb['total_return'])}（{ex_b * 100:+.1f}pp），Active Share 最低值 A {ppct(ra['ap_min'])}、B {ppct(rb['ap_min'])}"
+             "（B 只動 1–3 檔，比較貼近 20% 門檻）。因此選定組合落後的主因不是合規限制、費用或再平衡，而是衛星選股（見第 5 節）。"
+             f"A、B 相對 (a) 等權的差距（{(ra['total_return'] - b_ew['oos']) * 100:+.1f}pp、{(rb['total_return'] - b_ew['oos']) * 100:+.1f}pp）"
+             "是「只持 28 檔、現金 3%、單檔上限」相對全市場等權的結構差異。\n")
+    L.append("**歸因表的讀法**：(4) 衛星在 8 組裡一致是 −6 到 −10pp；其餘各項多在 ±1pp 內。(6a) 再平衡與 (6b) 時間差在不同組合間忽正忽負（±2pp），"
+             "是路徑依賴的雜訊（每組的衛星持股不同，成交均價相對前日收盤的跳空也不同），不能解讀成穩定的正或負貢獻。\n")
+
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text("\n".join(L), encoding="utf-8")
     print(f"寫入 {a.out}", file=sys.stderr)
