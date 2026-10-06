@@ -144,3 +144,32 @@ def test_check_target_weights_margin_and_missing():
     assert r["missing"] == ["00980A"] and r["complete"] is False
     r2 = eh.check_target_weights(mine, ETF, margin=0.9, expected_etfs=["00981A"])
     assert r2["ok"] == r["ok"] and r2["safe"] is False
+
+
+# ---- 真實 MoneyDJ 頁面（tests/fixtures/etf/real/，本機於 2026-10-06 存下）
+REAL = FX / "real"
+
+
+def real(code):
+    return eh.parse_moneydj((REAL / f"moneydj_{code}.html").read_text(encoding="utf-8"), code)
+
+
+def test_real_00981A_ignores_earlier_industry_chart_date():
+    r = real("00981A")  # 頁面較前面有「持股依產業圖」的資料日期 2026/08/31，不可取到
+    assert r["data_date"] == "2026-10-05"
+    assert list(r["holdings"].items())[:3] == [("2330", 0.0983), ("3037", 0.0887), ("2383", 0.0882)]
+    assert len(r["holdings"]) == 10 and r["holdings"]["8046"] == 0.0445
+
+
+def test_real_00985A():
+    r = real("00985A")
+    assert r["data_date"] == "2026-10-05" and r["holdings"]["2330"] == 0.1601 and len(r["holdings"]) == 10
+
+
+def test_real_00988A_global_keeps_non_tw_symbols():
+    r = real("00988A")
+    assert r["data_date"] == "2026-10-02"
+    h = r["holdings"]
+    assert h["LITE.US"] == 0.0747 and h["009150.KS"] == 0.0481 and h["6981.JP"] == 0.0426
+    assert h["3037"] == 0.0626 and h["2454"] == 0.0347  # 持有的台股仍轉成 4 位代號
+    assert sum(1 for t in h if t.isdigit() and len(t) == 4) == 2
