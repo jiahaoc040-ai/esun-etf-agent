@@ -23,7 +23,7 @@ def synthetic_universe(monkeypatch):
     monkeypatch.setattr(fi, "load_universe", lambda: {t: {"name": t, "market": "TWSE"} for t in TICKERS})
 
 
-def setup(seed=31, n_days=130):
+def _setup(seed=31, n_days=130):
     panel, dates, tickers = make_panel(seed=seed, n_tickers=60, n_days=n_days)
     f = fa.compute_factors(panel)
     caps, _ = mc.market_cap(panel, shares=pd.Series(np.arange(1, 61) * 1e6, index=panel.close.columns))
@@ -43,7 +43,7 @@ def flat_base(n=28, cash=0.03):
 
 # ------------------------------------------------------------------ base_weights
 def test_base_weights_structure_and_no_lookahead():
-    panel, dates, f, caps = setup()
+    panel, dates, f, caps = _setup()
     st = fi.FinalStrategy(params=P).bind(f, caps, None)
     D = dates[90]
     w = st.base_weights(D)
@@ -62,7 +62,7 @@ def test_base_weights_structure_and_no_lookahead():
 
 
 def test_base_weights_active_share_target_25():
-    panel, dates, f, caps = setup(seed=32)
+    panel, dates, f, caps = _setup(seed=32)
     D = dates[90]
     raw = fi.FinalStrategy(params=P).bind(f, caps, None).base_weights(D)
     etf = fake_etf(raw, mult=1.0)
@@ -196,7 +196,7 @@ def test_hard_active_share_failure():
 
 # ------------------------------------------------------------------ 策略與回測整合
 def test_decide_falls_back_to_base_on_bad_tilts():
-    panel, dates, f, caps = setup(seed=33)
+    panel, dates, f, caps = _setup(seed=33)
     D = dates[90]
     st = fi.FinalStrategy(params=P)
     fdf = fa.factors_on(f, D)
@@ -219,7 +219,7 @@ def run(panel, f, caps, tilt_fn=None, top10=None):
 
 
 def test_tilt_change_triggers_same_day_trade_only_when_changed():
-    panel, dates, f, caps = setup(seed=34)
+    panel, dates, f, caps = _setup(seed=34)
     r0 = run(panel, f, caps)
     sched = {d for i, d in enumerate(r0.daily.index) if i % 5 == 0}
     assert set(r0.daily.index[r0.daily["rebalanced"]]) >= sched          # 排程日一定交易
@@ -257,7 +257,7 @@ def test_random_tilt_fn_properties():
 
 
 def test_random_tilt_simulations_never_violate_rules():
-    panel, dates, f, caps = setup(seed=35)
+    panel, dates, f, caps = _setup(seed=35)
     etf = fake_etf(fi.FinalStrategy(params=P).bind(f, caps, None).base_weights(dates[90]))
     for seed in range(4):
         for period in (5, 1):
@@ -331,14 +331,14 @@ def shocked_panel(seed, targets, factors_by_day: dict, n_days=130):
 
 
 def etf_for(seed):
-    panel, dates, f, caps = setup(seed=seed)
+    panel, dates, f, caps = _setup(seed=seed)
     raw = fi.FinalStrategy(params=P).bind(f, caps, None).base_weights(dates[90])
     etf = fake_etf(raw)
     return etf, list(etf["E"])[:5], dates
 
 
 def test_ap_trigger_and_hard_rule_in_decide():
-    panel, dates, f, caps = setup(seed=36)
+    panel, dates, f, caps = _setup(seed=36)
     D = dates[90]
     st = fi.FinalStrategy(params=P)
     fdf = fa.factors_on(f, D)
@@ -362,7 +362,7 @@ def test_ap_trigger_and_hard_rule_in_decide():
 
 
 def test_recovery_target_after_a_breach_day():
-    panel, dates, f, caps = setup(seed=37)
+    panel, dates, f, caps = _setup(seed=37)
     D = dates[90]
     st = fi.FinalStrategy(params=P)
     raw = st.bind(f, caps, None).base_weights(D)

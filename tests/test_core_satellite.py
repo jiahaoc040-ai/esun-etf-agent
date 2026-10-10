@@ -97,7 +97,7 @@ def test_new_factors_values_and_no_lookahead():
 
 
 # ------------------------------------------------------------------ 核心＋衛星
-def setup(seed=14, sat_n=6):
+def _setup(seed=14, sat_n=6):
     panel, dates, tickers = make_panel(seed=seed, n_tickers=60, n_days=130)
     f = fa.compute_factors(panel)
     caps, _ = mc.market_cap(panel, shares=pd.Series(np.arange(1, 61) * 1e6, index=panel.close.columns))
@@ -106,7 +106,7 @@ def setup(seed=14, sat_n=6):
 
 
 def test_decide_structure():
-    panel, dates, f, caps, strat = setup()
+    panel, dates, f, caps, strat = _setup()
     D = dates[80]
     r = strat.decide(fa.factors_on(f, D), caps.loc[D], {}, None)
     w = r.weights
@@ -124,7 +124,7 @@ def test_decide_structure():
 
 
 def test_decide_is_deterministic_and_uses_only_given_inputs():
-    panel, dates, f, caps, strat = setup(seed=15)
+    panel, dates, f, caps, strat = _setup(seed=15)
     D = dates[80]
     a = strat.decide(fa.factors_on(f, D), caps.loc[D], {}, None).weights
     b = strat.decide(fa.factors_on(f, D), caps.loc[D], {}, None).weights
@@ -132,7 +132,7 @@ def test_decide_is_deterministic_and_uses_only_given_inputs():
 
 
 def test_satellite_hysteresis_keeps_incumbents():
-    panel, dates, f, caps, strat = setup(seed=16)
+    panel, dates, f, caps, strat = _setup(seed=16)
     D1, D2 = dates[80], dates[85]
     r1 = strat.decide(fa.factors_on(f, D1), caps.loc[D1], {}, None)
     sat1 = set(r1.selected[22:])
@@ -142,7 +142,7 @@ def test_satellite_hysteresis_keeps_incumbents():
 
 
 def test_core_satellite_backtest_rebalances_every_5_days(monkeypatch):
-    panel, dates, f, caps, strat = setup(seed=17)
+    panel, dates, f, caps, strat = _setup(seed=17)
     calls = []
     orig = strat.decide
     monkeypatch.setattr(strat.__class__, "decide", lambda self, *a: (calls.append(1), orig(*a))[1])
@@ -155,7 +155,7 @@ def test_core_satellite_backtest_rebalances_every_5_days(monkeypatch):
 
 
 def test_cap_weight_benchmark_and_summary_costs():
-    panel, dates, f, caps, strat = setup(seed=18)
+    panel, dates, f, caps, strat = _setup(seed=18)
     b = bt.cap_weight_benchmark(panel, caps)
     assert b.index.is_unique and b.iloc[0] == 1.0
     # 手算一天：前一日市值定權重、當日還原報酬加權

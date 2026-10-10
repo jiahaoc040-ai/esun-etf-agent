@@ -15,7 +15,7 @@ from esun_agent.strategy.core_satellite import CoreSatellite, CoreSatelliteParam
 from .helpers_market import make_panel
 
 
-def setup(seed=21, n_days=130):
+def _setup(seed=21, n_days=130):
     panel, dates, tickers = make_panel(seed=seed, n_tickers=60, n_days=n_days)
     f = fa.compute_factors(panel)
     caps, _ = mc.market_cap(panel, shares=pd.Series(np.arange(1, 61) * 1e6, index=panel.close.columns))
@@ -35,7 +35,7 @@ def test_ledger_zero_costs():
 
 
 def test_cost_free_backtest_has_no_fees_and_higher_nav():
-    panel, dates, f, caps = setup()
+    panel, dates, f, caps = _setup()
     strat = CoreSatellite("t", CoreSatelliteParams(core_k=22, sat_n=6, min_adv=0.0))
     free = bt.run_backtest(panel, strat, f, None, caps=caps, cost_free=True)
     paid = bt.run_backtest(panel, strat, f, None, caps=caps)
@@ -45,14 +45,14 @@ def test_cost_free_backtest_has_no_fees_and_higher_nav():
 
 # ------------------------------------------------------------------ 紙上組合與歸因
 def test_p0_equals_cap_weight_benchmark():
-    panel, dates, f, caps = setup()
+    panel, dates, f, caps = _setup()
     nav, _ = at.paper_nav(panel, f, caps, at.BenchmarkDecider())
     b = bt.cap_weight_benchmark(panel, caps).loc[nav.index]
     np.testing.assert_allclose(nav.values / nav.iloc[0], (b / b.iloc[0]).values, rtol=1e-10)
 
 
 def test_paper_nav_weights_drift_between_rebalances():
-    panel, dates, f, caps = setup(seed=22)
+    panel, dates, f, caps = _setup(seed=22)
     s5 = CoreSatellite("t", CoreSatelliteParams(core_k=22, sat_n=6, min_adv=0.0, rebalance_every=5, band=0.0, cash_target=0.0))
     nav5, log = at.paper_nav(panel, f, caps, s5)
     assert len(log) == -(-(len(dates) - 61) // 5)                    # 只在第 1、6、11… 天決策
@@ -64,7 +64,7 @@ def test_paper_nav_weights_drift_between_rebalances():
 
 
 def test_ladder_telescopes_exactly():
-    panel, dates, f, caps = setup(seed=23)
+    panel, dates, f, caps = _setup(seed=23)
     prm = CoreSatelliteParams(core_k=22, sat_n=6, min_adv=0.0)
     A = at.attribution_ladder(panel, f, caps, None, prm, dates[100])
     codes = [r["code"] for r in A["rungs"]]
@@ -104,7 +104,7 @@ def test_fit_active_share_minimal_touches_at_most_three_names():
 
 # ------------------------------------------------------------------ 合規基準 A/B
 def test_compliance_benchmark_structure_and_guard():
-    panel, dates, f, caps = setup(seed=24)
+    panel, dates, f, caps = _setup(seed=24)
     D = dates[80]
     st = ComplianceBenchmark("A", ComplianceParams(min_adv=0.0))
     r = st.decide(fa.factors_on(f, D), caps.loc[D], {}, None)
@@ -120,7 +120,7 @@ def test_compliance_benchmark_structure_and_guard():
 
 
 def test_compliance_modes_run_with_top10():
-    panel, dates, f, caps = setup(seed=25)
+    panel, dates, f, caps = _setup(seed=25)
     D = dates[80]
     base = ComplianceBenchmark("A", ComplianceParams(min_adv=0.0)).decide(fa.factors_on(f, D), caps.loc[D], {}, None).weights
     top = sorted(base, key=lambda t: -base[t])[:10]
