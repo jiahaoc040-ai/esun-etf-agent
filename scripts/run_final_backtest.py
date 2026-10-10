@@ -6,6 +6,7 @@
 樣本外 = T ≥ 2026-08-01；樣本內有名單偏誤，僅供參考。
 """
 import argparse
+import json
 import sys
 from multiprocessing import Pool
 from pathlib import Path
@@ -180,6 +181,35 @@ def main(argv=None) -> int:
              "前日收盤已經 < 20% 時，當日改補到 ≥ 34%（ap_recovery_target），並有測試保證連續漲停／跌停與單日超額衝擊下不會連 2 日低於 20%。")
     L.append("- 樣本外只有 44 個交易日，分布是 100 條相近路徑（同一段行情、不同隨機 tilt），反映 tilt 雜訊，不反映行情不確定性。")
     L.append("- Active Share 用靜態快照近似；實盤需每日更新 ETF 前 10 大。")
+    def oos_mdd(b):
+        base = b[b.index < OOS_START].index[-1]
+        return perf(b[b.index >= base])["mdd"]
+
+    def stats(x):
+        x = np.asarray(x, dtype=float)
+        q = np.quantile(x, [0.05, 0.5, 0.95])
+        return {"mean": float(x.mean()), "p5": float(q[0]), "median": float(q[1]), "p95": float(q[2]),
+                "min": float(x.min()), "max": float(x.max()), "std": float(x.std(ddof=1)) if len(x) > 1 else 0.0}
+
+    def block(df):
+        anyv = (df[["viol_h", "viol_w", "viol_c", "ap_fail"]].sum(axis=1) > 0)
+        return {"n": int(len(df)), "ret": stats(df["ret"]), "excess_vs_b": stats(df["ret"] - b_cw),
+                "excess_vs_a": stats(df["ret"] - b_ew), "mdd": stats(df["mdd"]), "ap_min_all": stats(df["ap_all"]),
+                "ap_min_oos": stats(df["ap_oos"]), "turnover": stats(df["turn"]), "cost_drag": stats(df["cost"]),
+                "violations": {"holdings": int(df["viol_h"].sum()), "weight": int(df["viol_w"].sum()),
+                               "cash": int(df["viol_c"].sum()), "ap_below_20_days": int(df["ap_fail"].sum()),
+                               "ap_max_consecutive": int(df["ap_consec"].max()), "sims_with_any": int(anyv.sum())},
+                "share_beating_b": float((df["ret"] - b_cw > 0).mean()), "share_beating_a": float((df["ret"] - b_ew > 0).mean()),
+                "share_beating_baseline": float((df["ret"] > bo["total_return"]).mean())}
+
+    summary = {"oos_start": OOS_START, "oos_days": int(bo["days"]), "cap_source": cap_src,
+               "universe_dates": [panel.dates[0], panel.dates[-1]], "benchmarks_oos": {"a_equal_weight": b_ew, "b_cap_weight_capped": b_cw,
+                                                                                           "a_mdd": oos_mdd(ew), "b_mdd": oos_mdd(cw)},
+               "baseline_oos": {k: bo[k] for k in ("total_return", "mdd", "ap_min", "turnover_ann", "cost_drag_ann")},
+               "baseline_is": {k: bi[k] for k in ("total_return", "mdd", "ap_min", "turnover_ann", "cost_drag_ann")},
+               "ap_fix_tiers": tiers, "random_tilt": block(sims), "stress_daily_tilt": block(stress),
+               "params": {k: getattr(P, k) for k in P.__dataclass_fields__}}
+    Path(a.out).with_suffix(".json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text("\n".join(L), encoding="utf-8")
     print(f"寫入 {a.out}", file=sys.stderr)

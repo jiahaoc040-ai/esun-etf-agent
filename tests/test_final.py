@@ -274,7 +274,7 @@ def test_declaration_loads_and_matches_code():
     assert d["tilt"]["limits"]["per_name_abs_delta"] == 0.03 and d["portfolio_rules"]["ap_target"] == 0.27
     ids = {b["id"] for b in d["tilt"]["allowed_bases"]}
     assert ids == {"financial_report", "investor_conference", "monthly_revenue", "trust_flow", "material_news"}
-    assert d["status"] == "final" and d["etf"]["name"] == "台灣核心優選 AI 主動 ETF" and d["etf"]["name_status"] == "final"
+    assert d["status"] == "final" and d["etf"]["name"] == "主動台灣核心優選 AI" and d["etf"]["name_status"] == "final"
     assert d["portfolio_rules"]["ap_target"] == 0.27 and d["portfolio_rules"]["ap_trigger"] == 0.22
     by_id = {b["id"]: b for b in d["tilt"]["allowed_bases"]}
     assert {i: set(b["authority"]) for i, b in by_id.items()} == {
@@ -401,3 +401,22 @@ def test_limit_up_limit_down_streak_never_two_consecutive_days_below_20(seed, si
     d = r.daily
     assert max_consecutive((d["ap_min"] < 0.20).to_numpy()) <= 1
     assert r.violations == {"holdings": 0, "weight": 0, "cash": 0}
+
+
+def test_submission_format_limits():
+    """官方格式：名稱開頭須為「主動」、≤20 字、限中英文；主題 ≤50 字；理念 100～300 字。"""
+    from esun_agent.strategy.declaration import validate_submission
+    d = json.loads(DECLARATION_PATH.read_text(encoding="utf-8"))
+    assert validate_submission(d) == []
+    for name, needle in (("台灣核心優選 AI 主動 ETF", "開頭"), ("主動" + "核" * 19, "超過 20"), ("主動台灣核心優選 AI 2.0", "中文或英文")):
+        bad = copy.deepcopy(d)
+        bad["etf"]["name"] = name
+        assert any(needle in e for e in validate_submission(bad)), name
+    bad = copy.deepcopy(d)
+    bad["theme"]["title"] = "題" * 51
+    assert any("theme.title" in e for e in validate_submission(bad))
+    for n in (99, 301):
+        bad = copy.deepcopy(d)
+        bad["philosophy_statement"] = "理" * n
+        assert any("philosophy_statement" in e for e in validate_submission(bad))
+    assert any("開頭" in e for e in validate_declaration({**d, "etf": {**d["etf"], "name": "AI 主動"}}))
