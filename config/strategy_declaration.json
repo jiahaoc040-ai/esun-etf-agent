@@ -3,7 +3,7 @@
  "status": "final",
  "status_note": "宣告已定案。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules 與 esun_agent/strategy/final.py 的 FinalParams 必須一致（有測試）。",
  "etf": {
-  "name": "台灣核心優選 AI 主動 ETF",
+  "name": "主動台灣核心優選 AI",
   "name_status": "final",
   "market": "台股（上市＋上櫃，限 universe_150）",
   "style": "大型權值核心＋AI Agent 事件加減碼"
@@ -145,5 +145,6 @@
   "strategy_code": "esun_agent/strategy/final.py",
   "backtest_report": "docs/final_strategy_backtest.md",
   "agent_metadata_note": "agent_metadata.code_version 使用 git:<short sha>；本檔任何欄位變動都視為改版"
- }
+ },
+ "philosophy_statement": "本 ETF 以台股 150 檔投資範圍內市值最大的 28 檔為市值加權核心（2330 ≤ 20%、個股 ≤ 8%），貼近大盤風險報酬並控管集中度；AI Agent 每日閱讀財報、法說會、月營收、投信連續買賣超與重大訊息，對個股做單檔 ±3%、總偏離 ≤ 15% 的小幅加減碼，每筆都須引用具名公開資訊，tilt 最短持有 5 個交易日，沒有證據就維持基準。同時與主動型 ETF 前十大持股保持 Active Share ≥ 27%，追求低回檔與紀律化的超額報酬。"
 }
