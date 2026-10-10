@@ -30,6 +30,8 @@
 - `esun_agent/active_share.py` Active Share 檢查
 - `esun_agent/dplan_validate.py` 提交前驗證（schema + C1/C2/C6/C9/C11/C12/C13/C14 + 覆蓋）
 - `esun_agent/strategy/final.py` 正式策略：合規基準 A（`base_weights`）＋ Agent 加減碼（`apply_tilts`），參數 `FinalParams`
+- `esun_agent/agent/` D-Plan 組裝器（T4）：`observations.py`（資料→sources/observations）、`llm.py`（Gemini 預設／Anthropic；LLM 只輸出 market_view 與 tilt）、`tilt_state.py`（runs/state/tilts.json，最短持有 5 日）、`plan.py`（目標權重→decisions/orders/posture/funding_for）、`assemble.py`（`assemble_day`：最多 3 次重試，失敗降級為零 tilt 保底）
+- `prompts/` LLM 提示詞模板（改模板 = 改版）
 - `config/strategy_declaration.json` 策略宣告（ETF「台灣核心優選 AI 主動 ETF」，status=final；主題／理念／基準／tilt 許可依據），與 `FinalParams` 一致（有測試）
 - Active Share 硬規則：目標 ≥ 27%；前日收盤 < 22% → 當日必須再平衡到 ≥ 27%（不受無交易帶與 5 日週期限制）；前日已 < 20% → 補到 ≥ 34%
 - `docs/final_strategy_backtest.md`、`docs/backtest_T3.md` 回測與歸因報告

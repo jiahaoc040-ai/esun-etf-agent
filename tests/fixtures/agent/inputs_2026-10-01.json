@@ -1,0 +1,44 @@
+{
+ "taifex": {
+  "url": "https://www.taifex.com.tw/cht/3/futDailyMarketReport",
+  "content_as_of": "2026-09-30T05:00:00+08:00",
+  "session_date": "2026-09-30",
+  "close": 23400.0,
+  "chg_pct": -0.3,
+  "volume": 98000,
+  "name": "TAIFEX 台指期夜盤"
+ },
+ "us": {
+  "url": "https://finance.example.com/us-close",
+  "content_as_of": "2026-09-30T04:00:00+08:00",
+  "name": "美股收盤行情（SOX/NDX/SPX/TSM）",
+  "quotes": {
+   "SOX": {
+    "close": 5400.0,
+    "chg_pct": -1.1
+   },
+   "NDX": {
+    "close": 20100.0,
+    "chg_pct": -0.5
+   },
+   "TSM": {
+    "close": 210.5,
+    "chg_pct": -0.9
+   }
+  }
+ },
+ "events": [
+  {
+   "basis": "material_news",
+   "ticker": "2317",
+   "authority": "mops",
+   "url": "https://mops.twse.com.tw/mops/web/t05sr01_1",
+   "content_as_of": "2026-09-30T14:10:00+08:00",
+   "published_at": "2026-09-30T14:10:00+08:00",
+   "statement": "鴻海公告重大訊息：主要客戶下修第四季訂單預估 8%",
+   "values": {
+    "order_revision_pct": -8
+   }
+  }
+ ]
+}

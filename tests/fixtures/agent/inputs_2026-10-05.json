@@ -1,0 +1,45 @@
+{
+ "taifex": {
+  "url": "https://www.taifex.com.tw/cht/3/futDailyMarketReport",
+  "content_as_of": "2026-10-02T05:00:00+08:00",
+  "session_date": "2026-10-02",
+  "close": 23400.0,
+  "chg_pct": -0.3,
+  "volume": 98000,
+  "name": "TAIFEX 台指期夜盤"
+ },
+ "us": {
+  "url": "https://finance.example.com/us-close",
+  "content_as_of": "2026-10-02T04:00:00+08:00",
+  "name": "美股收盤行情（SOX/NDX/SPX/TSM）",
+  "quotes": {
+   "SOX": {
+    "close": 5400.0,
+    "chg_pct": -1.1
+   },
+   "NDX": {
+    "close": 20100.0,
+    "chg_pct": -0.5
+   },
+   "TSM": {
+    "close": 210.5,
+    "chg_pct": -0.9
+   }
+  }
+ },
+ "events": [
+  {
+   "basis": "financial_report",
+   "ticker": "2330",
+   "authority": "mops",
+   "url": "https://mops.twse.com.tw/mops/web/t163sb04",
+   "content_as_of": "2026-10-02T14:30:00+08:00",
+   "published_at": "2026-10-02T14:30:00+08:00",
+   "statement": "台積電 2026 年第三季毛利率 58.2%，較前季下降 1.1 個百分點",
+   "values": {
+    "gross_margin_pct": 58.2,
+    "qoq_pp": -1.1
+   }
+  }
+ ]
+}
