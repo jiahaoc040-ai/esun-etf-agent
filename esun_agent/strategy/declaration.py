@@ -39,6 +39,13 @@ def validate_declaration(d: dict) -> list[str]:
             errs.append(f"portfolio_rules 缺 {f.name}")
         elif rules[f.name] != getattr(defaults, f.name):
             errs.append(f"portfolio_rules.{f.name}={rules[f.name]} 與程式預設 {getattr(defaults, f.name)} 不一致")
+    if d.get("status") not in ("draft", "final"):
+        errs.append(f"status 應為 draft 或 final: {d.get('status')!r}")
+    elif d["status"] == "final":
+        if not str(d["etf"].get("name", "")).strip() or d["etf"].get("name_status") != "final":
+            errs.append("status=final 時 etf.name 不可為空且 etf.name_status 必須是 final")
+        if any(b.get("authority_status") != "confirmed" for b in d["tilt"].get("allowed_bases", [])):
+            errs.append("status=final 時每個 tilt 依據的 authority_status 都必須是 confirmed")
     bases = d["tilt"].get("allowed_bases", [])
     ids = {b.get("id") for b in bases}
     if ids != TILT_BASIS_IDS:

@@ -84,7 +84,7 @@ def main(argv=None) -> int:
     ap.add_argument("--sims", type=int, default=100)
     ap.add_argument("--stress-sims", type=int, default=30)
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--sens-ap-target", type=float, default=0.27, help="敏感度分析：Active Share 目標抬高到此值（0 = 略過）")
+    ap.add_argument("--sens-ap-target", type=float, default=0.25, help="敏感度分析：改用此 Active Share 目標對照（0 = 略過）")
     a = ap.parse_args(argv)
 
     panel = load_panel()
@@ -152,8 +152,8 @@ def main(argv=None) -> int:
     L.append(f"\n基準樣本外報酬：(a) 等權 {pct(b_ew)}、(b) 市值上限 {pct(b_cw)}。")
     L.append(f"base_weights 的 Active Share 修正（每 5 個交易日取樣、共 {sum(tiers.values())} 個決策日）：" +
              "、".join(f"{k} {v} 次" for k, v in sorted(tiers.items())) +
-             f"；修正後目標權重的 Active Share 最低值 {ppct(min(ap_base_min))}（目標 ≥ 25%）。"
-             "（none = 原本就 ≥ 25%；minimal = 最小調整；wider = 放寬到 6 檔；full = 全面壓低。）\n")
+             f"；修正後目標權重的 Active Share 最低值 {ppct(min(ap_base_min))}（目標 ≥ {P.ap_target:.0%}）。"
+             f"（none = 原本就 ≥ {P.ap_target:.0%}；minimal = 最小調整；wider = 放寬到 6 檔；full = 全面壓低。）\n")
     L.append(f"## 2. 隨機 tilt × {a.sims} 次（模擬 Agent 雜訊）\n")
     L.append("每次 5 檔、幅度 ±1–3%（加碼可選合格名單內任何股票，含不在前 28 的；減碼只選現有持股）、每 5 個交易日重抽一次。\n")
     L += sim_block(sims, b_ew, b_cw, bo["total_return"])
@@ -163,7 +163,7 @@ def main(argv=None) -> int:
     L += sim_block(stress, b_ew, b_cw, bo["total_return"])
     L.append("")
     if sens is not None:
-        L.append(f"### 敏感度：Active Share 目標抬高到 {a.sens_ap_target:.0%}（其餘不變）× {a.sims} 次\n")
+        L.append(f"### 敏感度：Active Share 目標改為 {a.sens_ap_target:.0%} 對照（其餘不變，觸發門檻同為 {P.ap_trigger:.0%}）× {a.sims} 次\n")
         L.append("| 目標 | 樣本外報酬（平均） | 超額 vs (b)（平均） | 年換手（平均） | Active Share < 20% 天數（合計） | 最長連續 | 全期間最低值 | 任何違規的模擬數 |")
         L.append("|---|---|---|---|---|---|---|---|")
         for lab, d_ in ((f"{P.ap_target:.0%}（正式）", sims), (f"{a.sens_ap_target:.0%}", sens)):
@@ -175,9 +175,9 @@ def main(argv=None) -> int:
     L.append("- 隨機 tilt 沒有資訊含量，所以報酬分布反映的是「雜訊 tilt 的代價」：樣本外報酬圍繞無 tilt 基線，多出的費用與偏離是 Agent 要靠真實資訊優勢才能賺回的門檻。"
              "tilt 的總上限（Σ|delta|/2 ≤ 15%）與單檔上限（3%）讓雜訊 tilt 的傷害有界。")
     L.append("- **框架是否違規**（逐日期末實際權重檢查）：持股檔數、單檔權重上限、現金比三項在所有模擬中都是 0 次違規。"
-             "Active Share 在極少數日子（見上面「違規」欄）單日跌破 20%——決策時已補到 ≥ 25%、漂移保護在前日收盤 < 24% 時就提前再平衡，"
-             "但單日行情（某檔大漲跌使前 10 大組成改變）仍可能把 Active Share 一次拉低 4–6 個百分點。這些都是單日、沒有連續 2 日"
-             "（官方取消資格條件是連 2 日）；把目標抬到 27% 可減少但無法完全消除（見敏感度表）。")
+             "Active Share 在極少數日子（見上面「違規」欄）單日跌破 20%——決策時已補到 ≥ 27%、前日收盤 < 22% 時當日硬性再平衡，"
+             "但單日行情（某檔大漲跌使前 10 大組成改變）仍可能把 Active Share 一次拉低數個百分點。官方取消資格的條件是連 2 日："
+             "前日收盤已經 < 20% 時，當日改補到 ≥ 34%（ap_recovery_target），並有測試保證連續漲停／跌停與單日超額衝擊下不會連 2 日低於 20%。")
     L.append("- 樣本外只有 44 個交易日，分布是 100 條相近路徑（同一段行情、不同隨機 tilt），反映 tilt 雜訊，不反映行情不確定性。")
     L.append("- Active Share 用靜態快照近似；實盤需每日更新 ETF 前 10 大。")
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
@@ -186,7 +186,7 @@ def main(argv=None) -> int:
     return 0
 
 
-ACTIVE_GUARD = 0.20 + FinalParams().ap_guard
+ACTIVE_GUARD = FinalParams().ap_trigger
 
 if __name__ == "__main__":
     sys.exit(main())
