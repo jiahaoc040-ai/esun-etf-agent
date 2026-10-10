@@ -139,7 +139,7 @@ def cap_weight_benchmark(panel: Panel, caps: pd.DataFrame, start: str | None = N
 def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = None,
                  top10: dict[str, dict[str, float]] | None = None, start: str | None = None,
                  end: str | None = None, capital: float = INITIAL_CAPITAL,
-                 caps: pd.DataFrame | None = None, cost_free: bool = False) -> BacktestResult:
+                 caps: pd.DataFrame | None = None, cost_free: bool = False, tilt_fn=None) -> BacktestResult:
     """start/end 為「交易日 T」的範圍。第一個可交易日至少是第 MIN_HISTORY+1 個資料日（因子暖機）。"""
     factors = factors if factors is not None else compute_factors(panel)
     caps = caps if caps is not None else market_cap(panel)[0]
@@ -152,6 +152,7 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
     last_close: dict[str, float] = {}
     nav_pts = {dates[first - 1]: float(capital)}
     rows, unfilled, rejected_buys = [], 0, 0
+    last_tilts = None
     for i in range(first, last + 1):
         D, T = dates[i - 1], dates[i]
         # --- D 日收盤狀態（先把 D 日收盤價載入）
@@ -168,10 +169,21 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
         cur_w = {t: n * last_close[t] / prev_nav for t, n in led.holdings.items()}
 
         # --- 決策（只用 D 日以前資料）；非再平衡日不產生委託（D-Plan 上全部是 no_trade）
-        orders = []
+        orders, rebalanced = [], False
         guard = getattr(strat, "force_rebalance", None)
-        if (i - first) % strat.rebalance_every == 0 or (guard is not None and guard(cur_w, top10_ap)):
-            res = strat.decide(factors_on(factors, D), caps.loc[D], cur_w, top10_ap)
+        tilts, tilts_changed = None, False
+        if tilt_fn is not None:                     # Agent（或隨機）加減碼：tilt 有變動的當天可以交易
+            fd = factors_on(factors, D)
+            elig = list(fd.index[(fd["adv20"] >= strat.min_adv) & caps.loc[D].reindex(fd.index).notna()])
+            tilts = tilt_fn(D, elig, cur_w)
+            tilts_changed = tilts != last_tilts
+            last_tilts = tilts
+        if ((i - first) % strat.rebalance_every == 0 or tilts_changed
+                or (guard is not None and guard(cur_w, top10_ap))):
+            rebalanced = True
+            fdf = factors_on(factors, D)
+            res = (strat.decide(fdf, caps.loc[D], cur_w, top10_ap, tilts) if tilt_fn is not None
+                   else strat.decide(fdf, caps.loc[D], cur_w, top10_ap))
             tickers = sorted(set(res.weights) | set(led.holdings))
             decisions = [{"ticker": t, "target_weight": res.weights.get(t, 0.0), "decision_id": f"D{n}"}
                          for n, t in enumerate(tickers, 1)]
@@ -210,6 +222,7 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
             "v_holdings": int(not (MIN_HOLDINGS <= len(w) <= MAX_HOLDINGS)),
             "v_weight": int(any(x > max_weight(t) + 1e-12 for t, x in w.items())),
             "v_cash": int(cash_ratio < 0 or cash_ratio >= CASH_MAX), "ap_ok": ap_ok, "ap_min": ap_min,
+            "rebalanced": rebalanced,
         })
         nav_pts[T] = nav
     daily = pd.DataFrame(rows).set_index("date")

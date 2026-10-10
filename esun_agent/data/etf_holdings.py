@@ -345,7 +345,7 @@ def check_target_weights(weights: dict[str, float], etf_top10: dict[str, dict[st
         overlap = sorted(
             ({"ticker": t, "portfolio_weight": ptop[t], "etf_weight": btop[t],
               "overlap": round(min(ptop[t] / ptot, btop[t] / btot), 6)} for t in set(ptop) & set(btop)),
-            key=lambda x: -x["overlap"])
+            key=lambda x: (-x["overlap"], x["ticker"]))
         item = {"etf": etf, "active_share": d, "min": low, "overlap_tickers": overlap}
         if low < ACTIVE_SHARE_MIN:
             item["needed_cut"] = round(ACTIVE_SHARE_MIN - low, 6)

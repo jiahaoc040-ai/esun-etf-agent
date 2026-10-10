@@ -1,0 +1,142 @@
+{
+ "version": "1.0.0",
+ "status": "draft",
+ "status_note": "ETF 名稱、投資主題與理念為草案，請在 2026-10-21 繳交策略說明文件前確認或修改；修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit。",
+ "etf": {
+  "name": "Agent 核心加碼台灣主動式 ETF",
+  "name_status": "draft",
+  "market": "台股（上市＋上櫃，限 universe_150）",
+  "style": "大型權值核心＋AI Agent 事件加減碼"
+ },
+ "theme": {
+  "title": "市值加權核心，由 AI Agent 依公開資訊做小幅加減碼",
+  "summary": "以台股 150 檔投資範圍內市值最大的 28 檔為核心（市值加權、設單檔上限），貼近大盤權值股的風險報酬；再由 AI Agent 每日閱讀財報、法說會、月營收、投信買賣超與重大訊息，對少數個股做有限度的加碼或減碼。"
+ },
+ "philosophy": [
+  "核心部位追求貼近市值加權基準，避免過度集中與追高；超額報酬主要來自有證據的小幅調整，而非押注單一主題。",
+  "Agent 的每一次加減碼都必須能追溯到一則具名的公開資訊（來源、發布時間、數字），並說明該資訊為何支持加碼或減碼。",
+  "主動偏離有明確上限（單檔 ±3%、總偏離 15%），確保即使 Agent 判斷失誤，損失也有界；沒有足夠證據時維持基準權重（no_trade）。",
+  "與市面上主動型 ETF 的前 10 大持股保持足夠差異（Active Share 目標 ≥ 25%，官方門檻 20%），避免複製既有產品。"
+ ],
+ "benchmark": {
+  "name": "合規基準 A",
+  "definition": "投資範圍內『有當日價格且 20 日均成交值 ≥ 2 億』的股票，以市值（還原收盤價 × 發行股數）加權，2330 權重上限 20%、其他個股上限 8%（超額按市值比例重分配）；取權重最大的前 28 檔重新歸一；現金 3%；再以最小調整法（只動 1–3 檔重疊最大的標的，減下的權重分給第 11–28 名）把 Active Share 補到 ≥ 25%。",
+  "reference_benchmarks": {
+   "a": "150 檔等權（每日再平衡）",
+   "b": "市值加權上限：2330 ≤ 20%、其他 ≤ 8%（150 檔全體）"
+  },
+  "code": "esun_agent.strategy.final.FinalStrategy.base_weights"
+ },
+ "portfolio_rules": {
+  "n_base": 28,
+  "cash_target": 0.03,
+  "cash_low": 0.01,
+  "cash_high": 0.22,
+  "base_cap_tsmc": 0.2,
+  "base_cap_other": 0.08,
+  "tilt_cap_tsmc": 0.22,
+  "tilt_cap_other": 0.085,
+  "max_delta": 0.03,
+  "max_active": 0.15,
+  "min_hold": 20,
+  "max_hold": 29,
+  "ap_target": 0.25,
+  "ap_guard": 0.04,
+  "band": 0.02,
+  "rebalance_every": 5,
+  "min_adv": 200000000.0,
+  "guard_tsmc": 0.24,
+  "guard_other": 0.09
+ },
+ "rebalance_policy": {
+  "schedule": "每 5 個交易日再平衡一次；無交易帶 2%（既有持股目標與現權重差 < 2% 不交易）",
+  "extra_trading_days": [
+   "Agent 的 tilt 與前一日不同",
+   "漂移保護觸發（前日收盤權重逼近官方上限，或 Active Share 逼近 20%）"
+  ],
+  "orders": "一律由 esun_agent.orders.derive_orders 依目標權重機械產生，Agent 不寫股數"
+ },
+ "tilt": {
+  "format": "{ticker: delta}，delta 為占 NAV 的權重變動（+0.02 = 加碼 2% NAV）",
+  "limits": {
+   "per_name_abs_delta": 0.03,
+   "total_active": "Σ|delta| / 2 ≤ 0.15",
+   "universe": "僅限 universe_150；可加入不在基準前 28 名的股票，持股維持 20–30 檔（內部上限 29 檔，保留 1 檔給停牌而賣不掉的部位）",
+   "no_short": "不可對基準未持有的股票減碼"
+  },
+  "allowed_bases": [
+   {
+    "id": "financial_report",
+    "label": "財報",
+    "authority": [
+     "mops"
+    ],
+    "examples": [
+     "營收／毛利率／EPS 相對前期或市場預期明顯轉強或轉弱",
+     "存貨、應收帳款或現金流出現異常變化"
+    ]
+   },
+   {
+    "id": "investor_conference",
+    "label": "法說會",
+    "authority": [
+     "mops",
+     "media"
+    ],
+    "examples": [
+     "管理層上修／下修展望、資本支出或產能計畫",
+     "法說會揭露的訂單能見度或客戶需求變化"
+    ]
+   },
+   {
+    "id": "monthly_revenue",
+    "label": "月營收",
+    "authority": [
+     "mops"
+    ],
+    "examples": [
+     "月營收年增率或月增率連續加速／轉弱",
+     "創單月歷史新高或明顯低於近期趨勢"
+    ]
+   },
+   {
+    "id": "trust_flow",
+    "label": "投信連續買賣超",
+    "authority": [
+     "twse",
+     "tpex"
+    ],
+    "examples": [
+     "投信連續多個交易日淨買超（或淨賣超），且金額占成交值比重明顯"
+    ]
+   },
+   {
+    "id": "material_news",
+    "label": "重大訊息",
+    "authority": [
+     "mops"
+    ],
+    "examples": [
+     "重大合約、增資／減資、處分資產、訴訟、董監持股異動等公告"
+    ]
+   }
+  ],
+  "requirements": [
+   "每一筆 tilt 必須對應至少一個 observation，其 source.authority 屬於該依據允許的來源，且 content_as_of 不晚於決策日前一個交易日收盤",
+   "inference 必須標明使用的 tilt 依據 id（allowed_bases[].id），並說明方向（加碼／減碼）與幅度的理由",
+   "不得以股價走勢、市場傳聞或沒有來源的敘述作為 tilt 依據；技術面與投信以外的籌碼資料不在許可範圍",
+   "沒有足夠證據時不做 tilt，該股維持基準權重（decision 為 no_trade）"
+  ],
+  "forbidden_bases": [
+   "股價漲跌或技術指標",
+   "社群或論壇傳聞",
+   "沒有具名來源的消息",
+   "未來才會發生的事件當成已發生"
+  ]
+ },
+ "references": {
+  "strategy_code": "esun_agent/strategy/final.py",
+  "backtest_report": "docs/final_strategy_backtest.md",
+  "agent_metadata_note": "agent_metadata.code_version 使用 git:<short sha>；本檔任何欄位變動都視為改版"
+ }
+}

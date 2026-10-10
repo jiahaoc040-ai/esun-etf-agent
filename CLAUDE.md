@@ -29,6 +29,9 @@
 - `esun_agent/ledger.py` 記帳（成交、NAV、與官方庫存對帳）
 - `esun_agent/active_share.py` Active Share 檢查
 - `esun_agent/dplan_validate.py` 提交前驗證（schema + C1/C2/C6/C9/C11/C12/C13/C14 + 覆蓋）
+- `esun_agent/strategy/final.py` 正式策略：合規基準 A（`base_weights`）＋ Agent 加減碼（`apply_tilts`），參數 `FinalParams`
+- `config/strategy_declaration.json` 策略宣告（ETF 名稱／主題／理念／基準／tilt 許可依據），與 `FinalParams` 一致（有測試）
+- `docs/final_strategy_backtest.md`、`docs/backtest_T3.md` 回測與歸因報告
 - `scripts/validate_dplan.py` CLI
 - `tests/` — 修改任何東西後執行 `python -m pytest -q`，必須全綠
 
