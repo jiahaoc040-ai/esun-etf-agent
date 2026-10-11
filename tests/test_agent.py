@@ -16,12 +16,12 @@ from .agent_helpers import FakeLLM, Sim, find_obs, load_inputs, mv, obs_in_promp
 
 @pytest.fixture(scope="module")
 def env():
-    from esun_agent.data.etf_holdings import load_top10
+    from esun_agent.data.etf_holdings import load_top15
     from esun_agent.data.prices import load_panel
     from esun_agent.strategy.factors import compute_factors
     from esun_agent.strategy.marketcap import market_cap
     panel = load_panel()
-    return {"panel": panel, "factors": compute_factors(panel), "top10": load_top10(), "caps": market_cap(panel)[0]}
+    return {"panel": panel, "factors": compute_factors(panel), "top15": load_top15(), "caps": market_cap(panel)[0]}
 
 
 D1, T1 = "2026-09-24", "2026-09-29"

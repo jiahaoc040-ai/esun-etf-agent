@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""抓主動型 ETF 前 10 大持股 → data/etf_top10/YYYY-MM-DD.json。
+"""抓主動型 ETF 前 15 大持股（MoneyDJ「全部持股」頁 Basic0007B；原始列存 JSON 的 raw 欄位） → data/etf_top15/YYYY-MM-DD.json。
 
-資料源：MoneyDJ 持股明細頁（url 登錄在 data/reference/etf_sources.csv）。
+資料源：MoneyDJ 全部持股頁（url 登錄在 data/reference/etf_sources.csv）。
   python scripts/fetch_etf_holdings.py --save-raw        # 原始頁面存到 data/raw/etf/
-抓不到的 ETF 會列出，並產生 data/etf_top10/manual_template.csv；填好後存成
-data/etf_top10/manual.csv 再跑一次即可合併。
+抓不到的 ETF 會列出，並產生 data/etf_top15/manual_template.csv；填好後存成
+data/etf_top15/manual.csv 再跑一次即可合併。
 """
 import argparse
 import sys
@@ -24,7 +24,7 @@ def main(argv=None) -> int:
     ap.add_argument("--sleep", type=float, default=1.0, help="每檔請求前等待秒數")
     a = ap.parse_args(argv)
     res = update(a.date, raw_dir=ROOT / "data" / "raw" / "etf" if a.save_raw else None, sleep=a.sleep)
-    print(f"已存 {len(res['top10'])} 檔；海外型跳過 {len(res['overseas'])} 檔；手動補 {len(res['manual'])} 檔")
+    print(f"已存 {len(res['top15'])} 檔；海外型跳過 {len(res['overseas'])} 檔；手動補 {len(res['manual'])} 檔")
     if res["stale"]:
         print(f"\n警告：資料日期比最新交易日（{res['ref_date']}）舊超過 3 天：")
         for c, lag in sorted(res["stale"].items()):
@@ -33,7 +33,7 @@ def main(argv=None) -> int:
         print(f"\n抓不到 {len(res['missing'])} 檔：")
         for c, why in res["missing"].items():
             print(f"  {c}: {why}")
-        print(f"\n請填 {res['template']} 後另存為 data/etf_top10/manual.csv，再重跑。")
+        print(f"\n請填 {res['template']} 後另存為 data/etf_top15/manual.csv，再重跑。")
     return 1 if res["missing"] else 0
 
 

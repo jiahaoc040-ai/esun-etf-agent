@@ -1,14 +1,14 @@
 """正式策略：合規基準 A ＋ Agent 小幅加減碼（tilt）。
 
   base_weights(date)   A 的權重：合格名單（有 D 日價格、20 日均成交值 ≥ min_adv）的市值加權，2330 ≤ 20%、其他 ≤ 8%，
-                       取權重最大的前 28 檔重新歸一，現金目標 3%；再做 Active Share 修正到 ≥ 27%（官方 20%），
+                       取權重最大的前 28 檔重新歸一，現金目標 3%；再做 Active Share 修正到 ≥ 22%（官方 15%），
                        修正順序：B 的最小調整法（只動 1–3 檔）→ 放寬到 6 檔 → 全面壓低（見 ensure_active_share）。
   apply_tilts(base, tilts)   tilts = {ticker: delta（占 NAV）}；單檔 |delta| ≤ 3%、主動偏離 Σ|delta|/2 ≤ 15%；
                        可加入 150 檔內不在前 28 的股票，持股維持 20–30 檔（內部上限 29）。套用後重新檢查：單檔上限、現金 [1%, 22%]、
-                       Active Share ≥ 27%；超出時依序縮放／截斷／修正，並把結果記在 notes。
+                       Active Share ≥ 22%；超出時依序縮放／截斷／修正，並把結果記在 notes。
   decide / force_rebalance   回測與每日流程用：每 5 個交易日再平衡、無交易帶 2%；但 tilt 與前一日不同，或漂移保護
                        （權重逼近官方上限）觸發時，當天就可以交易。
-  Active Share 硬規則        前日收盤 Active Share < 22%（ap_trigger）→ 當日必須再平衡到 ≥ 27%（ap_target），
+  Active Share 硬規則        前日收盤 Active Share < 17%（ap_trigger）→ 當日必須再平衡到 ≥ 22%（ap_target），
                        不受無交易帶與 5 日週期限制（decide 此時不套無交易帶）。
 
 權重皆為占 NAV 的比例，現金 = 1 − Σ權重。基準、tilt 都只用 D 日以前的資料。
@@ -50,9 +50,9 @@ class FinalParams:
     max_active: float = 0.15               # Σ|delta| / 2
     min_hold: int = 20
     max_hold: int = 29                     # 官方 30：留 1 檔給「停牌賣不掉」的部位（賣單當天沒成交價，持股數會暫時多 1）
-    ap_target: float = 0.27                # Active Share 目標（官方門檻 0.20）
-    ap_recovery_target: float = 0.34       # 前日收盤 Active Share 已經 < 20%（昨天已違規）時，今天補到這個更高的目標，避免連 2 日低於 20%
-    ap_trigger: float = 0.22               # 硬規則：前日收盤 Active Share < 此值 → 當日必須再平衡到 ≥ ap_target，不受無交易帶與 5 日週期限制
+    ap_target: float = 0.22                # Active Share 目標（官方門檻 0.15；1005 版辦法：前 15 大、< 15% 違規）
+    ap_recovery_target: float = 0.29       # 前日收盤 Active Share 已經 < 15%（昨天已違規）時，今天補到這個更高的目標，避免連 2 日低於 15%
+    ap_trigger: float = 0.17               # 硬規則：前日收盤 Active Share < 此值 → 當日必須再平衡到 ≥ ap_target，不受無交易帶與 5 日週期限制
     guard_tsmc: float = 0.24               # 前日收盤權重超過這些值就提前再平衡（官方 25%／10%）
     guard_other: float = 0.09
     band: float = 0.02
@@ -77,21 +77,21 @@ def _ap_clean(res: dict | None) -> bool:
     return res is None or not (res["fails"] or res["warnings"])
 
 
-def ensure_active_share(weights: dict[str, float], top10: dict[str, dict[str, float]] | None,
+def ensure_active_share(weights: dict[str, float], top15: dict[str, dict[str, float]] | None,
                         p: PortfolioParams) -> tuple[dict[str, float], dict | None, str]:
-    """把 Active Share 補到 20% + p.ap_margin（final 策略為 27%）。每一段都從原權重重新出發（不累積）：
-       minimal   B 的最小調整法：只動 1–3 檔（單檔最多降到一半），減下的權重給第 11–28 名
+    """把 Active Share 補到 15% + p.ap_margin（final 策略為 22%）。每一段都從原權重重新出發（不累積）：
+       minimal   B 的最小調整法：只動 1–3 檔（單檔最多降到一半），減下的權重給第 16–28 名
        wider     放寬到 6 檔、單檔最多降到 30%
        full      全面壓低重疊最大者（fit_active_share）
-    回傳 (權重, 檢查結果, 使用的段落)；三段都達不到目標時回傳其中最高者（呼叫端另行檢查官方 20%）。"""
-    if not top10:
+    回傳 (權重, 檢查結果, 使用的段落)；三段都達不到目標時回傳其中最高者（呼叫端另行檢查官方 15%）。"""
+    if not top15:
         return dict(weights), None, "none"
-    res = check_target_weights(weights, top10, margin=p.ap_margin, expected_etfs=list(top10))
+    res = check_target_weights(weights, top15, margin=p.ap_margin, expected_etfs=list(top15))
     if _ap_clean(res):
         return dict(weights), res, "none"
-    tries = [("minimal", lambda: fit_active_share_minimal(weights, top10, p)),
-             ("wider", lambda: fit_active_share_minimal(weights, top10, p, max_names=6, floor_ratio=0.3)),
-             ("full", lambda: fit_active_share(weights, None, top10, p))]
+    tries = [("minimal", lambda: fit_active_share_minimal(weights, top15, p)),
+             ("wider", lambda: fit_active_share_minimal(weights, top15, p, max_names=6, floor_ratio=0.3)),
+             ("full", lambda: fit_active_share(weights, None, top15, p))]
     best = None
     for tier, fn in tries:
         w, r = fn()
@@ -117,10 +117,10 @@ def raw_base(fdf: pd.DataFrame, cap: pd.Series, p: FinalParams) -> tuple[dict[st
 
 
 def base_plan(fdf: pd.DataFrame, cap: pd.Series, p: FinalParams,
-              top10: dict[str, dict[str, float]] | None) -> tuple[dict[str, float], list[str], list[str]]:
+              top15: dict[str, dict[str, float]] | None) -> tuple[dict[str, float], list[str], list[str]]:
     """A 的權重 ＋ Active Share 補到目標。回傳 (權重, 合格名單, notes)。"""
     w, liquid = raw_base(fdf, cap, p)
-    w, res, tier = ensure_active_share(w, top10, p.portfolio_params())
+    w, res, tier = ensure_active_share(w, top15, p.portfolio_params())
     notes = [] if tier == "none" else [f"base_active_share_fix:{tier}"]
     return w, liquid, notes
 
@@ -174,7 +174,7 @@ def validate_tilts(base: dict[str, float], tilts: dict[str, float], p: FinalPara
 
 
 def apply_tilts(base: dict[str, float], tilts: dict[str, float], *, params: FinalParams | None = None,
-                eligible: set[str] | None = None, top10: dict[str, dict[str, float]] | None = None,
+                eligible: set[str] | None = None, top15: dict[str, dict[str, float]] | None = None,
                 strict: bool = True) -> TiltResult:
     """把 tilt 套到 base 上並重新檢查。strict=True（T4 與 LLM 互動用）：tilt 不合法 → TiltError，錯誤逐條列出；
     strict=False（每日排程的保底）：不合法的 tilt 直接略過，並記在 notes。
@@ -231,7 +231,7 @@ def apply_tilts(base: dict[str, float], tilts: dict[str, float], *, params: Fina
     if 1.0 - sum(new.values()) > p.cash_high + 1e-12:
         raise TiltError([f"現金 {1.0 - sum(new.values()):.2%} 高於上限 {p.cash_high:.0%}"])
     # --- Active Share
-    new, ap, tier = ensure_active_share({t: w for t, w in new.items() if w > 1e-12}, top10, pp)
+    new, ap, tier = ensure_active_share({t: w for t, w in new.items() if w > 1e-12}, top15, pp)
     if tier != "none":
         notes.append(f"active_share_fix:{tier}")
     for t in list(new):                                # 修正可能讓接收者超過 tilt 上限（只可能是 2330），再截一次
@@ -267,44 +267,44 @@ class FinalStrategy:
 
     # ---- base_weights(date)：需要先 bind 資料
     def bind(self, factors: dict[str, pd.DataFrame], caps: pd.DataFrame,
-             top10: dict[str, dict[str, float]] | None) -> "FinalStrategy":
-        self._ctx = (factors, caps, top10)
+             top15: dict[str, dict[str, float]] | None) -> "FinalStrategy":
+        self._ctx = (factors, caps, top15)
         return self
 
     def base_weights(self, date: str) -> dict[str, float]:
-        """date = 決策日 D（只用 D 日以前資料）。回傳 A 的權重（已補 Active Share 到 27%）。"""
+        """date = 決策日 D（只用 D 日以前資料）。回傳 A 的權重（已補 Active Share 到 22%）。"""
         if self._ctx is None:
-            raise RuntimeError("請先 bind(factors, caps, top10)")
+            raise RuntimeError("請先 bind(factors, caps, top15)")
         from .factors import factors_on
-        factors, caps, top10 = self._ctx
-        return base_plan(factors_on(factors, date), caps.loc[date], self.params, top10)[0]
+        factors, caps, top15 = self._ctx
+        return base_plan(factors_on(factors, date), caps.loc[date], self.params, top15)[0]
 
     # ---- 提前再平衡條件
-    def force_rebalance(self, current: dict[str, float], top10: dict[str, dict[str, float]] | None) -> bool:
+    def force_rebalance(self, current: dict[str, float], top15: dict[str, dict[str, float]] | None) -> bool:
         p = self.params
         if any(w > (p.guard_tsmc if t == TSMC else p.guard_other) for t, w in current.items()):
             return True
-        if top10 and current:
-            ap = check_target_weights(current, top10, margin=0.0, expected_etfs=list(top10))
+        if top15 and current:
+            ap = check_target_weights(current, top15, margin=0.0, expected_etfs=list(top15))
             return ap["min"] < p.ap_trigger
         return False
 
     # ---- 一次決策
     def decide(self, fdf: pd.DataFrame, cap: pd.Series, current: dict[str, float],
-               top10: dict[str, dict[str, float]] | None, tilts: dict[str, float] | None = None) -> PortfolioResult:
+               top15: dict[str, dict[str, float]] | None, tilts: dict[str, float] | None = None) -> PortfolioResult:
         p0 = self.params
-        cur_ap = (check_target_weights(current, top10, margin=0.0, expected_etfs=list(top10))["min"]
-                  if top10 and current else None)
+        cur_ap = (check_target_weights(current, top15, margin=0.0, expected_etfs=list(top15))["min"]
+                  if top15 and current else None)
         breached = cur_ap is not None and cur_ap < ACTIVE_SHARE_MIN
-        # 昨天（D 日收盤）已經 < 20%：今天補到更高的目標，讓第二天不會再被單日行情打回 20% 以下
+        # 昨天（D 日收盤）已經 < 15%：今天補到更高的目標，讓第二天不會再被單日行情打回 15% 以下
         p = replace(p0, ap_target=p0.ap_recovery_target) if breached else p0
         pp = p.portfolio_params()
-        base, liquid, notes = base_plan(fdf, cap, p, top10)
+        base, liquid, notes = base_plan(fdf, cap, p, top15)
         target, ap = base, None
         if breached:
             notes = notes + ["ap_recovery"]
         if tilts:
-            tr = apply_tilts(base, tilts, params=p, eligible=set(liquid), top10=top10, strict=False)
+            tr = apply_tilts(base, tilts, params=p, eligible=set(liquid), top15=top15, strict=False)
             target, ap, notes = tr.weights, tr.active_share, notes + tr.notes
         ap_forced = cur_ap is not None and cur_ap < p.ap_trigger
         if ap_forced:                                   # 硬規則：不受無交易帶限制，全面重設到目標權重
@@ -312,14 +312,14 @@ class FinalStrategy:
         else:
             banded = apply_no_trade_band(target, current, pp)
             if banded != target:
-                ap2 = (check_target_weights(banded, top10, margin=pp.ap_margin, expected_etfs=list(top10))
-                       if top10 else None)
+                ap2 = (check_target_weights(banded, top15, margin=pp.ap_margin, expected_etfs=list(top15))
+                       if top15 else None)
                 if ap2 is None or _ap_clean(ap2):
                     target, ap = banded, ap2
                 else:
                     notes = notes + ["band_dropped_for_active_share"]
-        if top10:
-            ap = check_target_weights(target, top10, margin=0.0, expected_etfs=list(top10))
+        if top15:
+            ap = check_target_weights(target, top15, margin=0.0, expected_etfs=list(top15))
             if ap["min"] < p.ap_target - 1e-9:
                 notes = notes + [f"ap_target_unreached:{ap['min']:.3f}"]
         return PortfolioResult(weights={t: w for t, w in target.items() if w > 0}, selected=sorted(target),

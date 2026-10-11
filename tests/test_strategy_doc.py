@@ -17,7 +17,7 @@ SUMMARY = {
     "random_tilt": {"n": 100, "ret": {"mean": 0.199, "p5": 0.182, "p95": 0.217, "min": 0.17, "max": 0.238},
                     "excess_vs_b": {"mean": -0.009, "p5": -0.026, "p95": 0.008},
                     "mdd": {"mean": -0.049, "min": -0.056}, "ap_min_all": {"min": 0.172}, "turnover": {"mean": 6.7},
-                    "violations": {"holdings": 0, "weight": 0, "cash": 0, "ap_below_20_days": 18, "ap_max_consecutive": 1}},
+                    "violations": {"holdings": 0, "weight": 0, "cash": 0, "ap_below_15_days": 18, "ap_max_consecutive": 1}},
     "stress_daily_tilt": {"n": 30, "ret": {"mean": 0.178}, "turnover": {"mean": 28.2}},
 }
 

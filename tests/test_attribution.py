@@ -74,7 +74,7 @@ def test_ladder_telescopes_exactly():
     assert A["total"] == pytest.approx(A["rungs"][-1]["oos"] - A["rungs"][0]["oos"])
     assert A["rungs"][-1]["oos"] == pytest.approx(
         bt.run_backtest(panel, CoreSatellite("s", prm), f, None, caps=caps).summary(dates[100], None)["total_return"])
-    assert A["rungs"][5]["step"] == pytest.approx(0.0)                # 沒有 top10 → Active Share 修正不改變任何東西
+    assert A["rungs"][5]["step"] == pytest.approx(0.0)                # 沒有 top15 → Active Share 修正不改變任何東西
     assert set(A["sat"]) == {"days", "core", "sat", "pool_ew"} and A["sat"]["days"] == len(dates) - 100
 
 
@@ -119,7 +119,7 @@ def test_compliance_benchmark_structure_and_guard():
     assert r2.violations == {"holdings": 0, "weight": 0, "cash": 0} and (r2.daily["n_hold"] == 28).all()
 
 
-def test_compliance_modes_run_with_top10():
+def test_compliance_modes_run_with_top15():
     panel, dates, f, caps = _setup(seed=25)
     D = dates[80]
     base = ComplianceBenchmark("A", ComplianceParams(min_adv=0.0)).decide(fa.factors_on(f, D), caps.loc[D], {}, None).weights

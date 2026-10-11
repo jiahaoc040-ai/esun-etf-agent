@@ -17,8 +17,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from esun_agent.backtest import (cap_weight_benchmark, equal_weight_benchmark, perf, run_backtest)  # noqa: E402
-from esun_agent.config import ROOT  # noqa: E402
-from esun_agent.data.etf_holdings import load_top10  # noqa: E402
+from esun_agent.config import ACTIVE_SHARE_MIN, ROOT  # noqa: E402
+from esun_agent.data.etf_holdings import load_top15  # noqa: E402
 from esun_agent.data.prices import load_panel  # noqa: E402
 from esun_agent.strategy.factors import compute_factors, factors_on  # noqa: E402
 from esun_agent.strategy.final import FinalParams, FinalStrategy, base_plan, random_tilt_fn  # noqa: E402
@@ -38,13 +38,13 @@ def ppct(x, d=1):
 
 def one(args):
     seed, period = args
-    r = run_backtest(G["panel"], G["strat"], G["factors"], G["top10"], caps=G["caps"],
+    r = run_backtest(G["panel"], G["strat"], G["factors"], G["top15"], caps=G["caps"],
                      tilt_fn=random_tilt_fn(seed, period=period))
     o = r.summary(OOS_START, None)
     d = r.daily
-    ap_bad = (d["ap_min"] < 0.2).to_numpy()
+    ap_bad = (d["ap_min"] < ACTIVE_SHARE_MIN).to_numpy()
     run_len = best = 0
-    for x in ap_bad:                      # 連續 Active Share < 20% 的最長天數（官方：連 2 日 → 取消資格）
+    for x in ap_bad:                      # 連續 Active Share < 15% 的最長天數（官方：連 2 日 → 取消資格）
         run_len = run_len + 1 if x else 0
         best = max(best, run_len)
     return {"ap_consec": best, "seed": seed, "ret": o["total_return"], "mdd": o["mdd"], "turn": o["turnover_ann"],
@@ -72,7 +72,7 @@ def sim_block(df: pd.DataFrame, b_ew: float, b_cw: float, base_ret: float) -> li
     L.append(f"\n- 超額 vs (b) > 0 的比例：{(df['ret'] - b_cw > 0).mean() * 100:.0f}%；vs (a) > 0：{(df['ret'] - b_ew > 0).mean() * 100:.0f}%；"
              f"勝過無 tilt 基線：{(df['ret'] > base_ret).mean() * 100:.0f}%。")
     L.append(f"- **違規（全期間逐日期末檢查）**：持股檔數 {int(df['viol_h'].sum())}、權重上限 {int(df['viol_w'].sum())}、現金比 {int(df['viol_c'].sum())}、"
-             f"Active Share < 20% 天數 {int(df['ap_fail'].sum())}"
+             f"Active Share < 15% 天數 {int(df['ap_fail'].sum())}"
              f"（其中「連續 2 日以上」最長 {int(df['ap_consec'].max())} 日；{n} 次模擬中有任何違規的次數：{int(((df[['viol_h', 'viol_w', 'viol_c', 'ap_fail']].sum(axis=1)) > 0).sum())}）。")
     L.append(f"- 持股檔數範圍 {int(df['n_min'].min())}–{int(df['n_max'].max())}；期末現金比範圍 {ppct(df['cash_min'].min())}–{ppct(df['cash_max'].max())}；"
              f"平均交易日（含提前再平衡）{df['rebal_days'].mean():.0f} 天；因賣單未成交被拒的買單合計 {int(df['rejected'].sum())}、停牌未成交 {int(df['unfilled'].sum())}。")
@@ -85,20 +85,20 @@ def main(argv=None) -> int:
     ap.add_argument("--sims", type=int, default=100)
     ap.add_argument("--stress-sims", type=int, default=30)
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--sens-ap-target", type=float, default=0.25, help="敏感度分析：改用此 Active Share 目標對照（0 = 略過）")
+    ap.add_argument("--sens-ap-target", type=float, default=0.20, help="敏感度分析：改用此 Active Share 目標對照（0 = 略過）")
     a = ap.parse_args(argv)
 
     panel = load_panel()
     factors = compute_factors(panel)
-    top10 = load_top10()
+    top15 = load_top15()
     caps, cap_src = market_cap(panel)
     strat = FinalStrategy()
-    G.update(panel=panel, factors=factors, top10=top10, caps=caps, strat=strat)
+    G.update(panel=panel, factors=factors, top15=top15, caps=caps, strat=strat)
 
     ew, cw = equal_weight_benchmark(panel), cap_weight_benchmark(panel, caps)
     first_base = None
 
-    base = run_backtest(panel, strat, factors, top10, caps=caps)
+    base = run_backtest(panel, strat, factors, top15, caps=caps)
     first_base = base.nav.index[0]
 
     def bret(b, start):
@@ -123,22 +123,22 @@ def main(argv=None) -> int:
     ap_base_min = []
     from esun_agent.data.etf_holdings import check_target_weights
     for D in panel.dates[60:-1:5]:
-        w, _, notes = base_plan(factors_on(factors, D), caps.loc[D], strat.params, top10)
+        w, _, notes = base_plan(factors_on(factors, D), caps.loc[D], strat.params, top15)
         tier = notes[0].split(":")[1] if notes else "none"
         tiers[tier] = tiers.get(tier, 0) + 1
-        ap_base_min.append(check_target_weights(w, top10, margin=0.0, expected_etfs=list(top10))["min"])
+        ap_base_min.append(check_target_weights(w, top15, margin=0.0, expected_etfs=list(top15))["min"])
 
     P = strat.params
     L = ["# 正式策略回測：合規基準 A ＋ Agent 小幅加減碼\n"]
     L.append("## 0. 規格\n")
     L.append(f"- **base_weights(D)**：合格名單（有 D 日價格、20 日均成交值 ≥ {P.min_adv / 1e8:.0f} 億）市值加權、2330 ≤ {P.base_cap_tsmc:.0%}、其他 ≤ {P.base_cap_other:.0%}，"
-             f"取前 {P.n_base} 檔重新歸一，現金 {P.cash_target:.0%}；Active Share 補到 ≥ {P.ap_target:.0%}（官方 20%）：最小調整（1–3 檔）→ 放寬（6 檔）→ 全面壓低。")
+             f"取前 {P.n_base} 檔重新歸一，現金 {P.cash_target:.0%}；Active Share 補到 ≥ {P.ap_target:.0%}（官方 15%，前 15 大口徑）：最小調整（1–3 檔）→ 放寬（6 檔）→ 全面壓低。")
     L.append(f"- **apply_tilts(base, tilts)**：單檔 |delta| ≤ {P.max_delta:.0%}、Σ|delta|/2 ≤ {P.max_active:.0%}；可加入名單內不在前 28 的股票；持股 {P.min_hold}–{P.max_hold} 檔；"
              f"套用後單檔 ≤ {P.tilt_cap_other:.0%}（2330 ≤ {P.tilt_cap_tsmc:.0%}）、現金 ≥ {P.cash_low:.0%}、Active Share ≥ {P.ap_target:.0%}。")
     L.append(f"- **交易時點**：每 {P.rebalance_every} 個交易日再平衡、無交易帶 {P.band:.0%}；tilt 與前一日不同、或漂移保護觸發"
              f"（前日收盤權重 2330 > {P.guard_tsmc:.0%}／其他 > {P.guard_other:.1%}，或 Active Share < {ACTIVE_GUARD:.0%}）時，當天就交易。")
     L.append(f"- 市值來源：{'發行股數快照' if cap_src == 'issued_shares' else '60 日均成交值代理（暫代）'}。基準：(a) 150 檔等權；(b) 市值加權上限（2330 ≤ 20%、其他 ≤ 8%）。"
-             "樣本外 = T ≥ 2026-08-01（樣本內有名單偏誤，僅供參考）。Active Share 用 2026-10-06 的 ETF 前 10 大靜態快照。\n")
+             "樣本外 = T ≥ 2026-08-01（樣本內有名單偏誤，僅供參考）。Active Share 用 2026-10-06 的 ETF 持股靜態快照（1005 版辦法為前 15 大口徑；目前快照是舊格式的前 10 大，待用 Basic0007B 重抓後重跑）。\n")
     L.append("## 1. 無 tilt 基線（只有 base_weights）\n")
     L.append("| 區間 | 天數 | 報酬 | 超額 vs (a) | 超額 vs (b) | MDD | Active Share 最低值 | 年換手 | 年化費用拖累 | 違規（持股/權重/現金） |")
     L.append("|---|---|---|---|---|---|---|---|---|---|")
@@ -165,7 +165,7 @@ def main(argv=None) -> int:
     L.append("")
     if sens is not None:
         L.append(f"### 敏感度：Active Share 目標改為 {a.sens_ap_target:.0%} 對照（其餘不變，觸發門檻同為 {P.ap_trigger:.0%}）× {a.sims} 次\n")
-        L.append("| 目標 | 樣本外報酬（平均） | 超額 vs (b)（平均） | 年換手（平均） | Active Share < 20% 天數（合計） | 最長連續 | 全期間最低值 | 任何違規的模擬數 |")
+        L.append("| 目標 | 樣本外報酬（平均） | 超額 vs (b)（平均） | 年換手（平均） | Active Share < 15% 天數（合計） | 最長連續 | 全期間最低值 | 任何違規的模擬數 |")
         L.append("|---|---|---|---|---|---|---|---|")
         for lab, d_ in ((f"{P.ap_target:.0%}（正式）", sims), (f"{a.sens_ap_target:.0%}", sens)):
             nv = int(((d_[["viol_h", "viol_w", "viol_c", "ap_fail"]].sum(axis=1)) > 0).sum())
@@ -176,11 +176,11 @@ def main(argv=None) -> int:
     L.append("- 隨機 tilt 沒有資訊含量，所以報酬分布反映的是「雜訊 tilt 的代價」：樣本外報酬圍繞無 tilt 基線，多出的費用與偏離是 Agent 要靠真實資訊優勢才能賺回的門檻。"
              "tilt 的總上限（Σ|delta|/2 ≤ 15%）與單檔上限（3%）讓雜訊 tilt 的傷害有界。")
     L.append("- **框架是否違規**（逐日期末實際權重檢查）：持股檔數、單檔權重上限、現金比三項在所有模擬中都是 0 次違規。"
-             "Active Share 在極少數日子（見上面「違規」欄）單日跌破 20%——決策時已補到 ≥ 27%、前日收盤 < 22% 時當日硬性再平衡，"
-             "但單日行情（某檔大漲跌使前 10 大組成改變）仍可能把 Active Share 一次拉低數個百分點。官方取消資格的條件是連 2 日："
-             "前日收盤已經 < 20% 時，當日改補到 ≥ 34%（ap_recovery_target），並有測試保證連續漲停／跌停與單日超額衝擊下不會連 2 日低於 20%。")
+             f"Active Share 在極少數日子（見上面「違規」欄）單日可能跌破 15%——決策時已補到 ≥ {P.ap_target:.0%}、前日收盤 < {P.ap_trigger:.0%} 時當日硬性再平衡，"
+             "但單日行情（某檔大漲跌使前 15 大組成改變）仍可能把 Active Share 一次拉低數個百分點。官方取消資格的條件是連 2 日："
+             f"前日收盤已經 < 15% 時，當日改補到 ≥ {P.ap_recovery_target:.0%}（ap_recovery_target），並有測試保證連續漲停／跌停與單日超額衝擊下不會連 2 日低於 20%。")
     L.append("- 樣本外只有 44 個交易日，分布是 100 條相近路徑（同一段行情、不同隨機 tilt），反映 tilt 雜訊，不反映行情不確定性。")
-    L.append("- Active Share 用靜態快照近似；實盤需每日更新 ETF 前 10 大。")
+    L.append("- Active Share 用靜態快照近似；實盤需每日更新 ETF 前 15 大（MoneyDJ 全部持股頁）。")
     def oos_mdd(b):
         base = b[b.index < OOS_START].index[-1]
         return perf(b[b.index >= base])["mdd"]
@@ -197,7 +197,7 @@ def main(argv=None) -> int:
                 "excess_vs_a": stats(df["ret"] - b_ew), "mdd": stats(df["mdd"]), "ap_min_all": stats(df["ap_all"]),
                 "ap_min_oos": stats(df["ap_oos"]), "turnover": stats(df["turn"]), "cost_drag": stats(df["cost"]),
                 "violations": {"holdings": int(df["viol_h"].sum()), "weight": int(df["viol_w"].sum()),
-                               "cash": int(df["viol_c"].sum()), "ap_below_20_days": int(df["ap_fail"].sum()),
+                               "cash": int(df["viol_c"].sum()), "ap_below_15_days": int(df["ap_fail"].sum()),
                                "ap_max_consecutive": int(df["ap_consec"].max()), "sims_with_any": int(anyv.sum())},
                 "share_beating_b": float((df["ret"] - b_cw > 0).mean()), "share_beating_a": float((df["ret"] - b_ew > 0).mean()),
                 "share_beating_baseline": float((df["ret"] > bo["total_return"]).mean())}

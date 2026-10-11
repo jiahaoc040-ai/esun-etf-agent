@@ -132,8 +132,8 @@ def test_active_share_fit_reduces_overlap():
     sc = scores()
     sel = po.select_holdings(sc, set(), P)
     w0 = po.raw_weights(sel, sc, P)
-    top = sorted(w0, key=lambda t: -w0[t])[:10]
-    etf = {"00001A": {t: 0.1 for t in top}}                  # 與我方前 10 大完全相同的 ETF
+    top = sorted(w0, key=lambda t: -w0[t])[:15]
+    etf = {"00001A": {t: 0.1 for t in top}}                  # 與我方前 15 大完全相同的 ETF
     from esun_agent.data.etf_holdings import check_target_weights
     assert not check_target_weights(w0, etf, expected_etfs=["00001A"])["ok"]
     w1, res = po.fit_active_share(w0, sc, etf, P)

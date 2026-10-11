@@ -166,10 +166,10 @@ def _sec_core(doc, decl, S):
         ["持股", f"基準取前 {r['n_base']} 檔；持股維持 {r['min_hold']}–30 檔（內部上限 {r['max_hold']} 檔，保留 1 檔給停牌賣不掉的部位）"],
         ["個股上限", f"基準：2330 ≤ {r['base_cap_tsmc']:.0%}、其他 ≤ {r['base_cap_other']:.0%}；加減碼後：2330 ≤ {r['tilt_cap_tsmc']:.0%}、其他 ≤ {r['tilt_cap_other']:.1%}（官方上限 25%／10%，留出價格漂移空間）"],
         ["現金", f"目標 {r['cash_target']:.0%}，區間 {r['cash_low']:.0%}–{r['cash_high']:.0%}；委託後預估現金比不得低於 2%（不足時按比例縮減買進）"],
-        ["Active Share", f"與任一主動型 ETF 前 10 大持股的 Active Share 目標 ≥ {r['ap_target']:.0%}（官方門檻 20%）。基準權重不足時，先用最小調整法"
-                          "（只動 1–3 檔重疊最大的標的，減下的權重分給第 11–28 名），不夠再逐步放寬"],
+        ["Active Share", f"我方前 15 大持股與任一主動型 ETF 前 15 大持股的 Active Share 目標 ≥ {r['ap_target']:.0%}（官方門檻 15%，低於且連續 2 日取消資格）。基準權重不足時，先用最小調整法"
+                          "（只動 1–3 檔重疊最大的標的，減下的權重分給第 16–28 名），不夠再逐步放寬"],
         ["Active Share 硬規則", f"前日收盤 Active Share < {r['ap_trigger']:.0%} → 當日必須再平衡到 ≥ {r['ap_target']:.0%}，不受無交易帶與 5 日週期限制；"
-                                  f"前日收盤已經 < 20% → 當日補到 ≥ {r['ap_recovery_target']:.0%}，避免連續 2 日低於官方門檻"],
+                                  f"前日收盤已經 < 15% → 當日補到 ≥ {r['ap_recovery_target']:.0%}，避免連續 2 日低於官方門檻"],
         ["漂移保護", f"前日收盤權重 2330 > {r['guard_tsmc']:.0%} 或其他個股 > {r['guard_other']:.0%} → 當日提前再平衡"],
         ["再平衡", f"每 {r['rebalance_every']} 個交易日一次；無交易帶 {r['band']:.0%}（權重差距在帶內不交易，避免往返約 0.6% 的成本）；"
                     "Agent 的 tilt 與前一日不同、或漂移保護觸發時，當天可以交易"],
@@ -177,7 +177,7 @@ def _sec_core(doc, decl, S):
     mapping_box(doc, [
         "market_view：以名單整體表現（tw_market）、法人買賣超（inst_flow）、台指期夜盤（taifex_night）、美股／ADR（us_overnight）"
         "等市場級 observation 為 basis_refs，說明 regime／stance；posture 與現金區間由實際委託推得，不由 Agent 自填。",
-        "inferences：再平衡日以「依合規基準（市值加權、2330 ≤ 20%、個股 ≤ 8%、取前 28 檔、Active Share ≥ 27%）重新計算目標權重，"
+        f"inferences：再平衡日以「依合規基準（市值加權、2330 ≤ 20%、個股 ≤ 8%、取前 28 檔、Active Share ≥ {r['ap_target']:.0%}）重新計算目標權重，"
         "偏離無交易帶者才調整」為推論；非再平衡日或差距在無交易帶內者，以「基準權重未偏離無交易帶」為推論，並寫入 no_trade_decisions。",
         "decisions／orders：target_weight 為基準權重加上有效 tilt；委託一律由官方公式 derive_orders 機械推導，Agent 不決定股數。",
     ])
@@ -253,11 +253,11 @@ def _sec_backtest(doc, decl, S):
         f"隨機 tilt（每次 5 檔、±1～3%）沒有資訊含量，反映的是『Agent 判斷失誤的成本』：樣本外相對市值加權上限基準平均 {pct(rt['excess_vs_b']['mean'])}"
         f"（5%～95%：{pct(rt['excess_vs_b']['p5'])} ～ {pct(rt['excess_vs_b']['p95'])}），最大回檔平均 {pct(rt['mdd']['mean'])}，與基準相近，損失有界。",
         f"框架檢查：{rt['n']} 次模擬、每日期末檢查，持股檔數違規 {v['holdings']}、權重上限違規 {v['weight']}、現金比違規 {v['cash']}；"
-        f"Active Share 單日低於 20% 共 {v['ap_below_20_days']} 天、最長連續 {v['ap_max_consecutive']} 日（官方取消資格條件為連續 2 日）。",
+        f"Active Share 單日低於 15% 共 {v['ap_below_15_days']} 天、最長連續 {v['ap_max_consecutive']} 日（官方取消資格條件為連續 2 日）。",
         f"壓力測試（tilt 每天都變，{st['n']} 次）：樣本外平均 {pct(st['ret']['mean'])}，年換手 {st['turnover']['mean']:.0f}x——tilt 頻繁變動的成本很高，"
         "因此規則要求最短持有 5 日、無新事件不變動。",
         "回測不證明 Agent 能創造超額報酬：真實 Agent 的 tilt 有資訊含量與否，要靠初賽期間的實際表現檢驗。樣本外僅 "
-        f"{S['oos_days']} 個交易日，統計誤差大；Active Share 以 2026-10-06 的主動型 ETF 前 10 大持股快照近似；未計股利。",
+        f"{S['oos_days']} 個交易日，統計誤差大；Active Share 以 2026-10-06 的主動型 ETF 持股快照近似（前 15 大口徑）；未計股利與除權配股（官方期末才一次加回）。",
     ], size=9.5)
     mapping_box(doc, [
         "market_view.counter_evidence 與 inferences.counter_evidence：誠實寫出反方訊號；信心（confidence）不得高於證據所能支持的程度。",
@@ -272,7 +272,7 @@ def _sec_checklist(doc, decl, S):
         ["投資理念：依公開資訊小幅加減碼", "observations.topic ∈ 五種 tilt 依據；inferences 引用該 observation；decisions 引用 inference", "assemble.check_proposal"],
         ["每筆 tilt 須有具名來源", "sources.authority 與 content_as_of；observations.source_ref；dplan_validate C1（引用鏈不可斷）", "validate()"],
         ["單檔 ±3%、總偏離 ≤ 15%、最短持有 5 日", "decisions.target_weight 與基準的差；沿用的 tilt 以『沿用…』推論重新引用原事件", "final.apply_tilts／tilt_state"],
-        ["Active Share ≥ 27%（官方 20%）", "target_weight 已通過 Active Share 檢查才進入 decisions（不單獨列欄位）", "final.ensure_active_share"],
+        [f"Active Share ≥ {decl['portfolio_rules']['ap_target']:.0%}（官方 15%）", "target_weight 已通過 Active Share 檢查才進入 decisions（不單獨列欄位）", "final.ensure_active_share"],
         ["現金與曝險承諾", "market_view.posture 由實際委託推得；dplan_validate C12", "plan.posture_for／validate()"],
         ["紀律：無證據不動", "no_trade_decisions 涵蓋所有未異動持股", "dplan_validate 覆蓋檢查"],
     ]

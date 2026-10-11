@@ -64,3 +64,15 @@ def test_funding_for_without_gap_rejected():
     doc = copy.deepcopy(POS)
     doc["market_view"]["posture"]["target_cash_pct_range"] = [0.03, 0.10]
     assert "C14" in codes(validate(doc, ctx))
+
+
+def test_cash_ratio_cap_is_inclusive(monkeypatch):
+    """1005 版辦法：現金「不超過」25% → 剛好等於上限不算違規（≤），超過才報 C9。"""
+    from esun_agent import dplan_validate as dv
+    buy, sell = dv.estimate_flows(POS["orders"], CTX["prev_close"])
+    cash_pct = (CTX["cash"] - (buy - sell)) / CTX["prev_nav"]
+    assert 0 < cash_pct < 0.25
+    monkeypatch.setattr(dv, "CASH_MAX", cash_pct)                  # 剛好等於上限
+    assert not any("現金比" in e and "C9" in e for e in validate(POS, CTX).errors)
+    monkeypatch.setattr(dv, "CASH_MAX", cash_pct - 1e-6)          # 略低於 → 超過
+    assert any("C9" in e and "現金比" in e and "> 25%" in e for e in validate(POS, CTX).errors)

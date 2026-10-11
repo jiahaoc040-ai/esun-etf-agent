@@ -1,13 +1,13 @@
 """D-Plan 組裝器：base_weights → LLM tilts → apply_tilts(strict) → derive_orders → validate()。
 
 流程（assemble_day）：
-  1. 基準：base_plan（A 的權重，Active Share 補到 27%）。
+  1. 基準：base_plan（A 的權重，Active Share 補到 ap_target，見 FinalParams；目前 22%）。
   2. 證據：observations.build_evidence（行情、法人、夜盤、美股、事件、沿用中的舊事件）。
   3. LLM（最多 max_attempts=3 次呼叫）：只輸出 market_view 與 tilt 變更。任何一層不合格都把錯誤回饋 LLM 重試：
        解析 → 引用與證據（authority、新事件、最短持有）→ apply_tilts(strict=True) 的 TiltError
        → stance 與實際操作方向一致 → 組完整 D-Plan 後 validate() 的 ERROR。
   4. 三次都失敗 → 保底 D-Plan：零 tilt、只做基準必要調整（同樣要通過 validate，否則丟 AssembleError，絕不輸出不合格檔案）。
-再平衡時點：距上次再平衡 ≥ 5 個交易日、tilt 與前一日不同、或漂移保護觸發（權重逼近上限／Active Share < 22%）才調整；
+再平衡時點：距上次再平衡 ≥ 5 個交易日、tilt 與前一日不同、或漂移保護觸發（權重逼近上限／前日 Active Share < ap_trigger，目前 17%）才調整；
 其餘日子所有持股寫入 no_trade_decisions（理由引用「權重未偏離無交易帶」的推論）。
 """
 from __future__ import annotations
@@ -73,7 +73,7 @@ class DayContext:
     panel: object
     factors: dict
     caps: object
-    top10: dict | None
+    top15: dict | None
     prev_nav: float                                  # 主辦方結算的前日淨值
     cash: float
     holdings: dict[str, int]                         # 主辦方結算庫存
@@ -297,7 +297,7 @@ def build_doc(ctx: DayContext, ev, *, prop: Proposal | None, carried: dict[str, 
     if decisions:
         rebalance_inf = add_inf(
             [dev_obs, mkt],
-            f"{due_reason}。依合規基準（市值加權、2330 ≤ 20%、個股 ≤ 8%、取前 28 檔、Active Share ≥ 27%）加上有效 tilt 重新計算目標權重，"
+            f"{due_reason}。依合規基準（市值加權、2330 ≤ 20%、個股 ≤ 8%、取前 28 檔、Active Share ≥ {ctx.strategy.params.ap_target:.0%}）加上有效 tilt 重新計算目標權重，"
             f"與現權重偏離超過無交易帶 {band:.0%} 者才調整；委託由官方公式機械推導，與公開說明書宣告的核心＋事件加減碼框架一致。",
             f"調整 {len(decisions)} 檔以回到目標權重", None)
     notrade_inf = None
@@ -390,7 +390,7 @@ def assemble_day(ctx: DayContext, llm, state: TiltState | None = None, *, max_at
     fdf, cap = factors_on(ctx.factors, D), ctx.caps.loc[D]
     cur_w = {t: n * close[t] / nav for t, n in holdings.items() if t in close}
 
-    base, liquid, base_notes = base_plan(fdf, cap, P, ctx.top10)
+    base, liquid, base_notes = base_plan(fdf, cap, P, ctx.top15)
     eligible = set(liquid)
     sys_notes: list[str] = list(base_notes)
     carried = _carried(state, base, eligible, P, sys_notes)
@@ -399,7 +399,7 @@ def assemble_day(ctx: DayContext, llm, state: TiltState | None = None, *, max_at
 
     elapsed = trading_days_elapsed(ctx.calendar, state.last_rebalance, T) if state.last_rebalance else None
     sched_due = state.last_rebalance is None or not holdings or elapsed >= P.rebalance_every
-    guard = bool(holdings) and ctx.strategy.force_rebalance(cur_w, ctx.top10)
+    guard = bool(holdings) and ctx.strategy.force_rebalance(cur_w, ctx.top15)
 
     usage = {"input": 0, "output": 0}
     attempts: list[dict] = []
@@ -412,9 +412,9 @@ def assemble_day(ctx: DayContext, llm, state: TiltState | None = None, *, max_at
         due = sched_due or guard or (tilts_changed and not fallback)
         reason = ("首次建倉" if not holdings else
                   f"距上次再平衡 {elapsed} 個交易日" if sched_due else
-                  "漂移保護觸發（權重逼近上限或 Active Share 低於 22%）" if guard else "tilt 與前一日不同")
+                  f"漂移保護觸發（權重逼近上限或 Active Share 低於 {P.ap_trigger:.0%}）" if guard else "tilt 與前一日不同")
         if due:
-            res = ctx.strategy.decide(fdf, cap, cur_w, ctx.top10, merged or None)
+            res = ctx.strategy.decide(fdf, cap, cur_w, ctx.top15, merged or None)
             target = dict(res.weights)
         else:
             target = dict(cur_w)
@@ -470,7 +470,7 @@ def assemble_day(ctx: DayContext, llm, state: TiltState | None = None, *, max_at
             else:
                 merged[c.ticker] = c.delta
         try:
-            apply_tilts(base, merged, params=P, eligible=eligible, top10=ctx.top10, strict=True)
+            apply_tilts(base, merged, params=P, eligible=eligible, top15=ctx.top15, strict=True)
         except TiltError as e:
             log["errors"] = feedback = [f"apply_tilts：{m}" for m in e.errors]
             continue

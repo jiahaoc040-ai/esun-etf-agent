@@ -16,11 +16,11 @@ TSMC = "2330"
 TSMC_MAX_WEIGHT = 0.25
 STOCK_MAX_WEIGHT = 0.10
 CASH_MIN = 0.0
-CASH_MAX = 0.25                          # 現金需 < 25%
+CASH_MAX = 0.25                          # 現金不超過 25%（≤；1005 版辦法六(九)）
 
 HOLD_TOLERANCE = 0.02                    # posture=hold 時 |淨流向| ≤ 2% NAV（server 預設參數）
-ACTIVE_SHARE_MIN = 0.20                  # 前 10 大持股 vs 各主動型 ETF 前 10 大
-ACTIVE_SHARE_TOP_N = 10
+ACTIVE_SHARE_MIN = 0.15                  # 我方前 15 大 vs 各主動型 ETF 前 15 大；< 15% 違規（1005 版辦法六(十三)）
+ACTIVE_SHARE_TOP_N = 15
 
 # 自訂安全緩衝（非官方規則，策略可調）
 CASH_BUFFER_LOW = 0.01                   # 現金至少留 1%，避免以均價成交後變負

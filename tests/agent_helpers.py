@@ -69,7 +69,7 @@ class Sim:
         i = panel.dates.index(trade_date)
         D = panel.dates[i - 1]
         ctx = DayContext(team_id=self.team, trade_date=trade_date, prev_date=D, panel=panel, factors=self.env["factors"],
-                         caps=self.env["caps"], top10=self.env["top10"], prev_nav=self.nav, cash=self.ledger.cash,
+                         caps=self.env["caps"], top15=self.env["top15"], prev_nav=self.nav, cash=self.ledger.cash,
                          holdings=dict(self.ledger.holdings), inputs=load_inputs(trade_date))
         state = TiltState.load(self.state_path)
         res = assemble_day(ctx, llm, state, **kw)

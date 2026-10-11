@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from ..config import CASH_BUFFER_HIGH, CASH_BUFFER_LOW, TSMC, WEIGHT_BUFFER, max_weight
+from ..config import ACTIVE_SHARE_TOP_N, CASH_BUFFER_HIGH, CASH_BUFFER_LOW, TSMC, WEIGHT_BUFFER, max_weight
 from ..data.etf_holdings import check_target_weights
 
 
@@ -33,7 +33,7 @@ class PortfolioParams:
     cash_low: float = CASH_BUFFER_LOW
     cash_high: float = CASH_BUFFER_HIGH
     band: float = 0.015                # 無交易帶
-    ap_margin: float = 0.02            # Active Share 緩衝（要求 ≥ 20% + margin）
+    ap_margin: float = 0.02            # Active Share 緩衝（要求 ≥ 15% + margin）
     ap_max_iter: int = 40
 
 
@@ -123,14 +123,14 @@ def apply_no_trade_band(target: dict[str, float], current: dict[str, float],
 
 # --------------------------------------------------------------------------- 4. Active Share
 
-def fit_active_share(weights: dict[str, float], scores: pd.Series, top10: dict[str, dict[str, float]] | None,
+def fit_active_share(weights: dict[str, float], scores: pd.Series, top15: dict[str, dict[str, float]] | None,
                      p: PortfolioParams) -> tuple[dict[str, float], dict | None]:
-    """不通過（含 margin）時，把重疊最大的標的權重乘 0.8，釋出的權重分給「不在失敗 ETF 前 10 大」的名稱
-    （依現權重比例、不超過上限）。回傳 (權重, 最後一次檢查結果)。top10 為 None 時不檢查。"""
-    if not top10:
+    """不通過（含 margin）時，把重疊最大的標的權重乘 0.8，釋出的權重分給「不在失敗 ETF 前 15 大」的名稱
+    （依現權重比例、不超過上限）。回傳 (權重, 最後一次檢查結果)。top15 為 None 時不檢查。"""
+    if not top15:
         return weights, None
     w = dict(weights)
-    res = check_target_weights(w, top10, margin=p.ap_margin, expected_etfs=list(top10))
+    res = check_target_weights(w, top15, margin=p.ap_margin, expected_etfs=list(top15))
     for _ in range(p.ap_max_iter):
         bad = res["fails"] + res["warnings"]
         if not bad:
@@ -155,25 +155,25 @@ def fit_active_share(weights: dict[str, float], scores: pd.Series, top10: dict[s
             w[t] = x + add
             spill += add
         w[victim] += cut - spill  # 沒人吸收得下的部分留在原標的（避免現金暴增）
-        res = check_target_weights(w, top10, margin=p.ap_margin, expected_etfs=list(top10))
+        res = check_target_weights(w, top15, margin=p.ap_margin, expected_etfs=list(top15))
     return w, res
 
 
-def fit_active_share_minimal(weights: dict[str, float], top10: dict[str, dict[str, float]] | None,
-                             p: PortfolioParams, max_names: int = 3, pool_from: int = 10, pool_to: int = 28,
+def fit_active_share_minimal(weights: dict[str, float], top15: dict[str, dict[str, float]] | None,
+                             p: PortfolioParams, max_names: int = 3, pool_from: int = ACTIVE_SHARE_TOP_N, pool_to: int = 28,
                              floor_ratio: float = 0.5) -> tuple[dict[str, float], dict | None]:
     """最小 Active Share 調整：只動「造成重疊最大」的 1–3 檔（max_names），每次把該檔權重乘 0.8，
-    釋出的權重分給權重排名第 pool_from+1～pool_to 名（預設第 11–28 名、且不在失敗 ETF 前 10 大）的標的，
+    釋出的權重分給權重排名第 pool_from+1～pool_to 名（預設第 16–28 名、且不在失敗 ETF 前 15 大）的標的，
     而不是像 fit_active_share 那樣讓所有名單外標的一起吸收。單檔最多降到原權重的 floor_ratio；
     已動過的檔數達上限、且它們都到下限時就停止（可能仍未通過，呼叫端看回傳的檢查結果）。"""
-    if not top10:
+    if not top15:
         return weights, None
     w = dict(weights)
     orig = dict(weights)
     order = sorted(w, key=lambda t: (-w[t], t))
     pool = order[pool_from:pool_to]
     touched: list[str] = []
-    res = check_target_weights(w, top10, margin=p.ap_margin, expected_etfs=list(top10))
+    res = check_target_weights(w, top15, margin=p.ap_margin, expected_etfs=list(top15))
     for _ in range(p.ap_max_iter):
         bad = res["fails"] + res["warnings"]
         if not bad:
@@ -198,7 +198,7 @@ def fit_active_share_minimal(weights: dict[str, float], top10: dict[str, dict[st
             w[t] = x + add
             spill += add
         w[victim] -= spill                    # 只扣掉真的被吸收的部分，現金不因此暴增
-        res = check_target_weights(w, top10, margin=p.ap_margin, expected_etfs=list(top10))
+        res = check_target_weights(w, top15, margin=p.ap_margin, expected_etfs=list(top15))
     return w, res
 
 
@@ -214,19 +214,19 @@ class PortfolioResult:
 
 
 def finalize_weights(target: dict[str, float], current: dict[str, float], p: PortfolioParams,
-                     top10: dict[str, dict[str, float]] | None, selected: list[str],
+                     top15: dict[str, dict[str, float]] | None, selected: list[str],
                      minimal_ap: bool = False) -> PortfolioResult:
     """目標權重 → Active Share 修正 → 無交易帶（若讓 Active Share 不過則放棄無交易帶）。
     minimal_ap=True 時用 fit_active_share_minimal（只動 1–3 檔），否則用 fit_active_share（全面壓低重疊）。"""
     if minimal_ap:
-        target, ap = fit_active_share_minimal(target, top10, p)
+        target, ap = fit_active_share_minimal(target, top15, p)
     else:
-        target, ap = fit_active_share(target, None, top10, p)
+        target, ap = fit_active_share(target, None, top15, p)
     banded = apply_no_trade_band(target, current, p)
     notes = []
     if banded != target:
         # 無交易帶可能讓 Active Share 變動，重新檢查；失敗就放棄無交易帶
-        ap2 = check_target_weights(banded, top10, margin=p.ap_margin, expected_etfs=list(top10)) if top10 else None
+        ap2 = check_target_weights(banded, top15, margin=p.ap_margin, expected_etfs=list(top15)) if top15 else None
         if ap2 is None or ap2["ok"]:
             target, ap = banded, ap2
         else:
@@ -236,10 +236,10 @@ def finalize_weights(target: dict[str, float], current: dict[str, float], p: Por
 
 
 def construct_portfolio(scores: pd.Series, current: dict[str, float], p: PortfolioParams,
-                        top10: dict[str, dict[str, float]] | None = None) -> PortfolioResult:
+                        top15: dict[str, dict[str, float]] | None = None) -> PortfolioResult:
     """scores：合格股票的分數（高→低）；current：現持股占 NAV 權重（以前日收盤計）。"""
     scores = scores.sort_values(ascending=False)
     if len(scores) < p.min_hold:
         raise ValueError(f"合格股票只有 {len(scores)} 檔，少於 min_hold={p.min_hold}")
     selected = select_holdings(scores, set(current), p)
-    return finalize_weights(raw_weights(selected, scores, p), current, p, top10, selected)
+    return finalize_weights(raw_weights(selected, scores, p), current, p, top15, selected)

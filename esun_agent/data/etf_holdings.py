@@ -1,15 +1,20 @@
-"""主動型 ETF 前 10 大持股（Active Share 比對基準）。
+"""主動型 ETF 前 15 大持股（Active Share 比對基準；1005 版辦法：我方前 15 大 vs 各主動型 ETF 前 15 大）。
 
-單一資料源：MoneyDJ「持股明細」頁
-  https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid={code}.TW
-頁面為 UTF-8（requests 必須設 resp.encoding="utf-8"）。「持股明細」區塊有「資料日期：YYYY/MM/DD」，
-接著是表格「個股名稱｜投資比例(%)｜持有股數」，列出前 10 大。個股名稱格式：
+單一資料源：MoneyDJ「個別ETF-全部持股」頁（Basic0007B）
+  https://www.moneydj.com/ETF/X/Basic/Basic0007B.xdjhtm?etfid={code}.TW
+頁面為 UTF-8（requests 必須設 resp.encoding="utf-8"）。頁面有「資料日期：YYYY/MM/DD」，接著是表格
+「個股名稱｜投資比例(%)｜持有股數」，列出**所有**持股（含現金、台指期貨等非股票列，例如
+「台指期貨 …(FITXN*1.TF)」；這些列依 NON_HOLDING_KEYWORDS／.TF 代號規則排除，不算進前 15 大）。個股名稱格式：
   台積電(2330.TW)、國巨*(2327.TW)、Lumentum(LITE.US)、Samsung Elec Mech(009150.KS)
 .TW 且 4 位數 → 台股代號（如 "2330"）；其他保留括號內原字串（如 "LITE.US"），不視為台股。
 
-輸出 data/etf_top10/YYYY-MM-DD.json：
-  {"as_of": 抓取基準日, "data_dates": {etf: 該檔資料日期}, "top10": {etf: {ticker: weight(0~1)}},
-   "overseas": [純美股、跳過者], "stale": {etf: 落後天數}}
+舊格式（Basic0007，只列前 10 大，標題「持股明細」）已不再使用：parse_moneydj 仍可用 n=10 解析舊頁面
+（tests/fixtures/etf/ 的 moneydj_*.html 與 real/ 為舊格式 fixture，僅供回歸測試）。
+
+輸出 data/etf_top15/YYYY-MM-DD.json：
+  {"as_of": 抓取基準日, "data_dates": {etf: 該檔資料日期}, "top15": {etf: {ticker: weight(0~1)}},
+   "raw": {etf: [[原始名稱, 投資比例(%)], ...]}（全部持股原始列，含現金／期貨）, "overseas": [純美股、跳過者],
+   "stale": {etf: 落後天數}}
 每檔 ETF 的資料日期可能不同；比基準日（最新交易日）舊超過 STALE_DAYS 天會列入 stale 警告（不視為缺漏）。
 抓不到或解析失敗的 ETF 不輸出殘缺資料，列入 missing 並產生手動補資料的 CSV 模板。
 """
@@ -29,17 +34,19 @@ from ..active_share import check_active_share, top_n
 from ..config import ACTIVE_SHARE_MIN, ACTIVE_SHARE_TOP_N, REFERENCE_DIR, ROOT
 from ..universe import load_active_etfs
 
-ETF_TOP10_DIR = ROOT / "data" / "etf_top10"
+ETF_TOP15_DIR = ROOT / "data" / "etf_top15"
 SOURCES_PATH = REFERENCE_DIR / "etf_sources.csv"
 MARKET_DIR = ROOT / "data" / "market"
 MANUAL_FILENAME = "manual.csv"
 TEMPLATE_FILENAME = "manual_template.csv"
 MANUAL_COLUMNS = ["etf_code", "name", "rank", "ticker", "weight_pct"]
-MONEYDJ_URL = "https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid={code}.TW"
+MONEYDJ_URL = "https://www.moneydj.com/ETF/X/Basic/Basic0007B.xdjhtm?etfid={code}.TW"
 STALE_DAYS = 3
 MANUAL_DATA_DATE = "manual"
-# 名稱含這些字的列是現金部位／衍生品／應收應付，不是持股，不可算進前 10 大
+# 名稱含這些字的列是現金部位／衍生品／應收應付，不是持股，不可算進前 15 大
 NON_HOLDING_KEYWORDS = ("現金", "期貨", "保證金", "應收", "應付", "附買回")
+# 括號代號為期貨（如「台指期貨 …(FITXN*1.TF)」）也排除，即使名稱沒有「期貨」二字
+NON_HOLDING_CODE_SUFFIXES = (".TF",)
 
 
 # --------------------------------------------------------------------------- 解析
@@ -106,15 +113,25 @@ class _TableParser(HTMLParser):
 _DATE_RE = re.compile(r"資料日期\s*[：:]\s*(?:<[^>]*>\s*)*(\d{4})/(\d{1,2})/(\d{1,2})")
 
 
-def parse_moneydj(html: str, what: str = "") -> dict:
-    """解析 MoneyDJ 持股明細頁 → {"data_date": "YYYY-MM-DD", "holdings": {ticker: weight(小數)}}。
+def is_non_holding(name: str) -> bool:
+    """現金／期貨／保證金／應收應付／附買回（名稱關鍵字，或括號代號為 .TF 期貨）→ 不是持股。"""
+    if any(k in name for k in NON_HOLDING_KEYWORDS):
+        return True
+    m = re.search(r"\(([^()\s]+)\)\s*$", name)
+    return bool(m and m.group(1).upper().endswith(NON_HOLDING_CODE_SUFFIXES))
 
-    找「持股明細」之後的每個「資料日期」，若其後緊接的第一個表格表頭含「個股名稱」與「投資比例」，即為持股表。
-    名稱含「現金／期貨／保證金／應收／應付／附買回」的列排除。有效列（名稱非空且比例可解析）少於 10 → ValueError；多於 10 取權重前 10 大。
+
+def parse_moneydj(html: str, what: str = "", n: int = ACTIVE_SHARE_TOP_N) -> dict:
+    """解析 MoneyDJ 全部持股頁（Basic0007B）→
+    {"data_date": "YYYY-MM-DD", "holdings": {前 n 大 ticker: weight(小數)}, "raw": [[名稱, 比例%], ...]}。
+
+    raw = 表格原始列（含現金／期貨）。找「全部持股」（舊版頁面為「持股明細」）之後的每個「資料日期」，
+    若其後緊接的第一個表格表頭含「個股名稱」與「投資比例」，即為持股表。非持股列（is_non_holding）排除；
+    有效列（名稱非空且比例可解析）少於 n → ValueError；多於 n 取權重前 n 大（預設 15，舊頁面用 n=10）。
     """
-    marker = html.find("持股明細")
+    marker = min((i for i in (html.find("全部持股"), html.find("持股明細")) if i >= 0), default=-1)
     if marker < 0:
-        raise ValueError(f"{what}: 頁面沒有「持股明細」區塊")
+        raise ValueError(f"{what}: 頁面沒有「全部持股」或「持股明細」區塊")
     last_err = "找不到「資料日期」"
     for m in _DATE_RE.finditer(html, marker):
         p = _TableParser()
@@ -128,23 +145,25 @@ def parse_moneydj(html: str, what: str = "") -> dict:
             ni = next(i for i, c in enumerate(hdr) if "個股名稱" in c)
             wi = next(i for i, c in enumerate(hdr) if "投資比例" in c)
             holdings: dict[str, float] = {}
+            raw: list[list] = []
             for r in table[hdr_i + 1:]:
                 if len(r) <= max(ni, wi):
                     continue
-                if any(k in r[ni] for k in NON_HOLDING_KEYWORDS):
+                raw.append([r[ni], parse_percent(r[wi])])
+                if is_non_holding(r[ni]):
                     continue
                 t, w = parse_holding_name(r[ni]), parse_percent(r[wi])
                 if t is None or w is None:
                     continue
                 holdings[t] = holdings.get(t, 0.0) + w / 100.0
-            if len(holdings) < ACTIVE_SHARE_TOP_N:
-                last_err = f"只解析出 {len(holdings)} 檔持股（需要至少 {ACTIVE_SHARE_TOP_N}）"
+            if len(holdings) < n:
+                last_err = f"只解析出 {len(holdings)} 檔持股（需要至少 {n}）"
                 break
-            out = {t: round(w, 6) for t, w in top_n(holdings).items()}
+            out = {t: round(w, 6) for t, w in top_n(holdings, n).items()}
             if not 0.05 <= sum(out.values()) <= 1.0001:
-                raise ValueError(f"{what}: 前 10 大權重總和 {sum(out.values()):.4f} 不合理")
+                raise ValueError(f"{what}: 前 {n} 大權重總和 {sum(out.values()):.4f} 不合理")
             y, mo, d = (int(x) for x in m.groups())
-            return {"data_date": date(y, mo, d).isoformat(), "holdings": out}
+            return {"data_date": date(y, mo, d).isoformat(), "holdings": out, "raw": raw}
         # 這個「資料日期」後面沒有持股表 → 試下一個
     raise ValueError(f"{what}: 無法解析持股明細：{last_err}")
 
@@ -187,13 +206,13 @@ def fetch_all(day: date | str, raw_dir: Path | None = None, sources: dict[str, d
               session: requests.Session | None = None, ref_date: date | None = None,
               sleep: float = 0.0) -> dict:
     """逐檔抓取；單檔失敗不影響其他檔。ref_date = 最新交易日（stale 判斷基準；預設取 data/market 最新檔，
-    再沒有就用 day）。回傳 {date, top10, data_dates, overseas, missing:{etf: 原因}, stale:{etf: 落後天數}}。"""
+    再沒有就用 day）。回傳 {date, top15, data_dates, raw, overseas, missing:{etf: 原因}, stale:{etf: 落後天數}}。"""
     ds = str(day)
     ref = ref_date or latest_trading_day() or date.fromisoformat(ds)
     sources = sources if sources is not None else load_sources()
     session = session or requests.Session()
     session.headers.setdefault("User-Agent", "Mozilla/5.0 (esun-etf-agent)")
-    top10, data_dates, overseas, missing, stale = {}, {}, [], {}, {}
+    top15, data_dates, raw, overseas, missing, stale = {}, {}, {}, [], {}, {}
     for code, src in sources.items():
         if src["overseas"]:
             overseas.append(code)
@@ -205,18 +224,18 @@ def fetch_all(day: date | str, raw_dir: Path | None = None, sources: dict[str, d
         except Exception as e:  # 每檔獨立：網路、HTTP、格式改版都只標記該檔
             missing[code] = f"{type(e).__name__}: {e}"
             continue
-        top10[code], data_dates[code] = r["holdings"], r["data_date"]
+        top15[code], data_dates[code], raw[code] = r["holdings"], r["data_date"], r["raw"]
         lag = (ref - date.fromisoformat(r["data_date"])).days
         if lag > STALE_DAYS:
             stale[code] = lag
-    return {"date": ds, "ref_date": ref.isoformat(), "top10": top10, "data_dates": data_dates,
+    return {"date": ds, "ref_date": ref.isoformat(), "top15": top15, "data_dates": data_dates, "raw": raw,
             "overseas": sorted(overseas), "missing": missing, "stale": stale}
 
 
 # --------------------------------------------------------------------------- 手動補資料
 
 def write_manual_template(codes: list[str], path: Path) -> Path:
-    """每個缺漏的 ETF 產生 10 列空白（rank 1~10），使用者填 ticker 與 weight_pct（百分比，如 8.52）。"""
+    """每個缺漏的 ETF 產生 15 列空白（rank 1~15），使用者填 ticker 與 weight_pct（百分比，如 8.52）。"""
     names = load_active_etfs()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
@@ -230,7 +249,7 @@ def write_manual_template(codes: list[str], path: Path) -> Path:
 
 def load_manual(path: Path) -> dict[str, dict[str, float]]:
     """讀取手動補的 CSV → {etf_code: {ticker: weight}}。ticker 空白的列略過；
-    某 ETF 填了但不足 10 檔、代號重複或不在 active_etfs 名單 → ValueError。"""
+    某 ETF 填了但不足 15 檔、代號重複或不在 active_etfs 名單 → ValueError。"""
     known = load_active_etfs()
     rows: dict[str, dict[str, float]] = {}
     with open(path, encoding="utf-8-sig") as f:
@@ -257,8 +276,8 @@ def load_manual(path: Path) -> dict[str, dict[str, float]]:
 
 # --------------------------------------------------------------------------- 存取
 
-def top10_path(day: date | str, base: Path | None = None) -> Path:
-    return (base or ETF_TOP10_DIR) / f"{day}.json"
+def top15_path(day: date | str, base: Path | None = None) -> Path:
+    return (base or ETF_TOP15_DIR) / f"{day}.json"
 
 
 def update(day: date | str, base: Path | None = None, raw_dir: Path | None = None,
@@ -266,19 +285,19 @@ def update(day: date | str, base: Path | None = None, raw_dir: Path | None = Non
            ref_date: date | None = None, sleep: float = 0.0) -> dict:
     """抓取 + 合併手動檔（base/manual.csv，若存在）+ 存檔；缺漏者產生 base/manual_template.csv。
     手動補的 ETF 資料日期記為 "manual"（無法驗證新舊，請自行確認）。"""
-    base = base or ETF_TOP10_DIR
+    base = base or ETF_TOP15_DIR
     res = fetch_all(day, raw_dir, sources, session, ref_date, sleep)
     manual_path = base / MANUAL_FILENAME
     manual = load_manual(manual_path) if manual_path.exists() else {}
     res["manual"] = sorted(c for c in manual if c not in res["overseas"])
     for code in res["manual"]:
-        res["top10"][code] = manual[code]
+        res["top15"][code] = manual[code]
         res["data_dates"][code] = MANUAL_DATA_DATE
         res["missing"].pop(code, None)
         res["stale"].pop(code, None)
     out = {"as_of": res["date"], "ref_date": res["ref_date"], "data_dates": res["data_dates"],
-           "top10": res["top10"], "overseas": res["overseas"], "stale": res["stale"]}
-    p = top10_path(res["date"], base)
+           "top15": res["top15"], "raw": res["raw"], "overseas": res["overseas"], "stale": res["stale"]}
+    p = top15_path(res["date"], base)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(out, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
     if res["missing"]:
@@ -290,17 +309,17 @@ def _read(day: date | str | None, base: Path) -> dict:
     if day is None:
         files = sorted(base.glob("????-??-??.json"))
         if not files:
-            raise FileNotFoundError(f"{base} 下沒有 ETF 前 10 大資料")
+            raise FileNotFoundError(f"{base} 下沒有 ETF 前 15 大資料")
         p = files[-1]
     else:
-        p = top10_path(day, base)
+        p = top15_path(day, base)
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def load_top10(day: date | str | None = None, base: Path | None = None) -> dict[str, dict[str, float]]:
+def load_top15(day: date | str | None = None, base: Path | None = None) -> dict[str, dict[str, float]]:
     """讀取 {etf_code: {ticker: weight}}；day=None 取最新一份。手動檔（manual.csv）會覆蓋同代號。"""
-    base = base or ETF_TOP10_DIR
-    data = _read(day, base)["top10"]
+    base = base or ETF_TOP15_DIR
+    data = _read(day, base)["top15"]
     mp = base / MANUAL_FILENAME
     if mp.exists():
         data.update(load_manual(mp))
@@ -309,12 +328,12 @@ def load_top10(day: date | str | None = None, base: Path | None = None) -> dict[
 
 def load_data_dates(day: date | str | None = None, base: Path | None = None) -> dict[str, str]:
     """{etf_code: 資料日期 'YYYY-MM-DD' 或 'manual'}。"""
-    return _read(day, base or ETF_TOP10_DIR)["data_dates"]
+    return _read(day, base or ETF_TOP15_DIR)["data_dates"]
 
 
 # --------------------------------------------------------------------------- Active Share 串接
 
-def check_target_weights(weights: dict[str, float], etf_top10: dict[str, dict[str, float]] | None = None,
+def check_target_weights(weights: dict[str, float], etf_top15: dict[str, dict[str, float]] | None = None,
                          margin: float = 0.02, expected_etfs: list[str] | None = None) -> dict:
     """擬定的目標權重（{ticker: 占 NAV 小數}）是否通過 Active Share。
 
@@ -323,19 +342,19 @@ def check_target_weights(weights: dict[str, float], etf_top10: dict[str, dict[st
     - fails：每檔未通過（< 門檻）的 ETF 與調整建議；warnings：未達 safe 但仍 ≥ 門檻的 ETF。
     - missing：expected_etfs（預設 = 資料中缺少的非海外主動型 ETF）沒有資料者；有缺漏時 complete=False，
       此時 ok 只代表「已有資料的 ETF」都通過，不能當成全數通過。
-    調整建議（heuristic）：Active Share（歸一化）= 1 − Σmin(p_i, b_i)，列出與該 ETF 前 10 大重疊的標的，
+    調整建議（heuristic）：Active Share（歸一化）= 1 − Σmin(p_i, b_i)，列出與該 ETF 前 15 大重疊的標的，
     依重疊量排序；needed_cut 是歸一化口徑下重疊量需再下降的幅度。實際調整後請重跑本函式確認。
     """
-    etf_top10 = etf_top10 if etf_top10 is not None else load_top10()
-    res = check_active_share(weights, etf_top10, ACTIVE_SHARE_MIN)
+    etf_top15 = etf_top15 if etf_top15 is not None else load_top15()
+    res = check_active_share(weights, etf_top15, ACTIVE_SHARE_MIN)
     if expected_etfs is None:
         src = load_sources()
         expected_etfs = [c for c, s in src.items() if not s["overseas"]]
-    missing = sorted(set(expected_etfs) - set(etf_top10))
+    missing = sorted(set(expected_etfs) - set(etf_top15))
     fails, warnings = [], []
     ptop = top_n(weights)
     ptot = sum(ptop.values()) or 1.0
-    for etf, h in etf_top10.items():
+    for etf, h in etf_top15.items():
         d = res["detail"][etf]
         low = min(d["normalized"], d["raw"])
         if low >= ACTIVE_SHARE_MIN + margin:

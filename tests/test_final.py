@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from esun_agent import backtest as bt
+from esun_agent.config import ACTIVE_SHARE_MIN
 from esun_agent.data.etf_holdings import check_target_weights
 from esun_agent.strategy import factors as fa
 from esun_agent.strategy import final as fi
@@ -15,6 +16,7 @@ from esun_agent.strategy.declaration import DECLARATION_PATH, load_declaration, 
 from .helpers_market import make_panel
 
 P = fi.FinalParams(min_adv=0.0)
+AP_T, AP_TRIG, AP_REC = P.ap_target, P.ap_trigger, P.ap_recovery_target       # 目標／觸發／昨日已違規後的補強目標
 TICKERS = ["2330"] + [str(1001 + i) for i in range(59)]
 
 
@@ -30,8 +32,8 @@ def _setup(seed=31, n_days=130):
     return panel, dates, f, caps
 
 
-def fake_etf(w, n=10, mult=1.0):
-    """ETF 前 10 大 = 我方前 10 大（乘上 mult）。"""
+def fake_etf(w, n=15, mult=1.0):
+    """ETF 前 15 大 = 我方前 15 大（乘上 mult）。"""
     top = sorted(w, key=lambda t: -w[t])[:n]
     return {"E": {t: w[t] * mult for t in top}}
 
@@ -61,15 +63,15 @@ def test_base_weights_structure_and_no_lookahead():
         fi.FinalStrategy(params=P).base_weights(D)
 
 
-def test_base_weights_active_share_target_25():
+def test_base_weights_active_share_target():
     panel, dates, f, caps = _setup(seed=32)
     D = dates[90]
     raw = fi.FinalStrategy(params=P).bind(f, caps, None).base_weights(D)
     etf = fake_etf(raw, mult=1.0)
-    assert check_target_weights(raw, etf, margin=0.0, expected_etfs=["E"])["min"] < 0.27
+    assert check_target_weights(raw, etf, margin=0.0, expected_etfs=["E"])["min"] < AP_T
     w, _, notes = fi.base_plan(fa.factors_on(f, D), caps.loc[D], P, etf)
     ap = check_target_weights(w, etf, margin=0.0, expected_etfs=["E"])
-    assert ap["min"] >= 0.27 - 1e-9 and sum(w.values()) == pytest.approx(0.97)
+    assert ap["min"] >= AP_T - 1e-9 and sum(w.values()) == pytest.approx(0.97)
     assert notes and notes[0].startswith("base_active_share_fix:")
     assert fi.FinalStrategy(params=P).bind(f, caps, etf).base_weights(D) == w
 
@@ -78,16 +80,16 @@ def test_ensure_active_share_minimal_then_escalates():
     w = flat_base()
     names = sorted(w, key=lambda t: (-w[t], t))
     pp = P.portfolio_params()
-    partial = {"E": {**{t: 0.1 for t in names[:8]}, TICKERS[50]: 0.1, TICKERS[51]: 0.1}}   # 與我方前 10 大重疊 8 檔
-    assert check_target_weights(w, partial, margin=0.0, expected_etfs=["E"])["min"] < 0.27
+    partial = {"E": {**{t: 0.1 for t in names[:12]}, TICKERS[50]: 0.1, TICKERS[51]: 0.1, TICKERS[52]: 0.1}}   # 與我方前 15 大重疊 12 檔
+    assert check_target_weights(w, partial, margin=0.0, expected_etfs=["E"])["min"] < AP_T
     out, res, tier = fi.ensure_active_share(w, partial, pp)
-    assert tier == "minimal" and res["min"] >= 0.27 - 1e-9
+    assert tier == "minimal" and res["min"] >= AP_T - 1e-9
     assert len([t for t in w if out[t] < w[t] - 1e-9]) <= 3                      # 最小調整只減 1–3 檔
-    many = {f"E{i}": {t: w[t] for t in names[i * 3:i * 3 + 10]} for i in range(5)}  # 5 檔 ETF 的前 10 大輪流蓋住全部持股
+    many = {f"E{i}": {t: w[t] for t in names[i * 3:i * 3 + 15]} for i in range(5)}  # 5 檔 ETF 的前 15 大輪流蓋住全部持股
     out, res, tier = fi.ensure_active_share(w, many, pp)
-    assert tier == "full" and res["min"] >= 0.27 - 1e-9
+    assert tier == "full" and res["min"] >= AP_T - 1e-9
     assert fi.ensure_active_share(w, None, pp) == (w, None, "none")
-    far = {"E": {t: 0.1 for t in TICKERS[40:50]}}
+    far = {"E": {t: 0.1 for t in TICKERS[40:55]}}
     assert fi.ensure_active_share(w, far, pp)[2] == "none"
 
 
@@ -171,15 +173,15 @@ def test_cash_floor_scales_buys():
 def test_active_share_rechecked_after_tilts():
     base = flat_base()
     pp = P.portfolio_params()
-    etf = {"E": {t: 0.1 for t in TICKERS[30:40]}}                       # 與基準無重疊 → 基準 AP 很高
-    r0 = fi.apply_tilts(base, {TICKERS[1]: 0.01}, params=P, top10=etf)
+    etf = {"E": {t: 0.1 for t in TICKERS[30:45]}}                       # 與基準無重疊 → 基準 AP 很高
+    r0 = fi.apply_tilts(base, {TICKERS[1]: 0.01}, params=P, top15=etf)
     assert "active_share_fix" not in " ".join(r0.notes)
-    # 把 tilt 全部加到 ETF 前 10 大 → 重疊變大 → AP 掉到 25% 以下 → 需要修正
+    # 把 tilt 全部加到 ETF 前 15 大 → 重疊變大 → AP 掉到目標以下 → 需要修正
     tilts = {t: 0.03 for t in TICKERS[30:34]}
     etf2 = {"E": {t: base.get(t, 0.0) + 0.03 for t in TICKERS[30:40]}}
-    r = fi.apply_tilts(base, tilts, params=P, top10=etf2)
+    r = fi.apply_tilts(base, tilts, params=P, top15=etf2)
     ap = check_target_weights(r.weights, etf2, margin=0.0, expected_etfs=["E"])
-    assert ap["min"] >= 0.27 - 1e-6 or any("active_share" in n for n in r.notes)
+    assert ap["min"] >= AP_T - 1e-6 or any("active_share" in n for n in r.notes)
     assert ap["ok"] and sum(r.weights.values()) <= 1 - P.cash_low + 1e-9
     assert pp.ap_margin == pytest.approx(0.07)
 
@@ -189,8 +191,8 @@ def test_hard_active_share_failure():
     etf = {"E": {t: base[t] for t in TICKERS[1:11]}}
     tight = fi.FinalParams(min_adv=0.0, ap_max_iter=0)                   # 修正無法運作 → 低於官方門檻
     with pytest.raises(fi.TiltError, match="低於官方門檻"):
-        fi.apply_tilts(base, {TICKERS[1]: 0.01}, params=tight, top10=etf)
-    r = fi.apply_tilts(base, {TICKERS[1]: 0.01}, params=tight, top10=etf, strict=False)
+        fi.apply_tilts(base, {TICKERS[1]: 0.01}, params=tight, top15=etf)
+    r = fi.apply_tilts(base, {TICKERS[1]: 0.01}, params=tight, top15=etf, strict=False)
     assert "active_share_below_official" in r.notes
 
 
@@ -214,8 +216,8 @@ def test_force_rebalance_triggers():
     assert st.force_rebalance(w, etf)
 
 
-def run(panel, f, caps, tilt_fn=None, top10=None):
-    return bt.run_backtest(panel, fi.FinalStrategy(params=P), f, top10, caps=caps, tilt_fn=tilt_fn)
+def run(panel, f, caps, tilt_fn=None, top15=None):
+    return bt.run_backtest(panel, fi.FinalStrategy(params=P), f, top15, caps=caps, tilt_fn=tilt_fn)
 
 
 def test_tilt_change_triggers_same_day_trade_only_when_changed():
@@ -261,7 +263,7 @@ def test_random_tilt_simulations_never_violate_rules():
     etf = fake_etf(fi.FinalStrategy(params=P).bind(f, caps, None).base_weights(dates[90]))
     for seed in range(4):
         for period in (5, 1):
-            r = run(panel, f, caps, fi.random_tilt_fn(seed, period=period), top10=etf)
+            r = run(panel, f, caps, fi.random_tilt_fn(seed, period=period), top15=etf)
             d = r.daily
             assert r.violations == {"holdings": 0, "weight": 0, "cash": 0}, (seed, period)
             assert d["n_hold"].between(20, 29).all() and d["max_w"].max() < 0.25
@@ -271,11 +273,11 @@ def test_random_tilt_simulations_never_violate_rules():
 # ------------------------------------------------------------------ 宣告檔
 def test_declaration_loads_and_matches_code():
     d = load_declaration()
-    assert d["tilt"]["limits"]["per_name_abs_delta"] == 0.03 and d["portfolio_rules"]["ap_target"] == 0.27
+    assert d["tilt"]["limits"]["per_name_abs_delta"] == 0.03 and d["portfolio_rules"]["ap_target"] == AP_T
     ids = {b["id"] for b in d["tilt"]["allowed_bases"]}
     assert ids == {"financial_report", "investor_conference", "monthly_revenue", "trust_flow", "material_news"}
     assert d["status"] == "final" and d["etf"]["name"] == "主動台灣核心優選 AI" and d["etf"]["name_status"] == "final"
-    assert d["portfolio_rules"]["ap_target"] == 0.27 and d["portfolio_rules"]["ap_trigger"] == 0.22
+    assert d["portfolio_rules"]["ap_target"] == AP_T and d["portfolio_rules"]["ap_trigger"] == AP_TRIG
     by_id = {b["id"]: b for b in d["tilt"]["allowed_bases"]}
     assert {i: set(b["authority"]) for i, b in by_id.items()} == {
         "financial_report": {"mops"}, "investor_conference": {"mops", "media"}, "monthly_revenue": {"mops"},
@@ -309,7 +311,7 @@ def test_declaration_final_status_requirements():
     assert any("status" in e for e in validate_declaration(bad))
 
 
-# ------------------------------------------------------------------ Active Share 硬規則（< 22% → 當日必須再平衡到 ≥ 27%）
+# ------------------------------------------------------------------ Active Share 硬規則（< trigger → 當日必須再平衡到 ≥ target）
 def max_consecutive(mask) -> int:
     best = run_len = 0
     for x in mask:
@@ -345,20 +347,20 @@ def test_ap_trigger_and_hard_rule_in_decide():
     raw = st.bind(f, caps, None).base_weights(D)
     etf = fake_etf(raw)
     ap_raw = check_target_weights(raw, etf, margin=0.0, expected_etfs=["E"])["min"]
-    assert 0.20 <= ap_raw < 0.22 or ap_raw < 0.20                         # 原始基準的 Active Share 很低 → 會觸發
-    assert st.force_rebalance(raw, etf)                                  # < 22% → 硬規則觸發
-    fixed = st.decide(fdf, caps.loc[D], {}, etf).weights                 # 空倉決策 → AP ≥ 27%
+    assert ap_raw < AP_TRIG                                              # 原始基準的 Active Share 很低 → 會觸發
+    assert st.force_rebalance(raw, etf)                                  # < trigger → 硬規則觸發
+    fixed = st.decide(fdf, caps.loc[D], {}, etf).weights                 # 空倉決策 → AP ≥ target
     ap_fixed = check_target_weights(fixed, etf, margin=0.0, expected_etfs=["E"])["min"]
-    assert ap_fixed >= 0.27 - 1e-9 and not st.force_rebalance(fixed, etf)
-    # 現權重 AP < 22%：不受無交易帶限制（把帶寬放到 50% 也一樣）→ 目標 AP ≥ 27%
+    assert ap_fixed >= AP_T - 1e-9 and not st.force_rebalance(fixed, etf)
+    # 現權重 AP < trigger：不受無交易帶限制（把帶寬放到 50% 也一樣）→ 目標 AP ≥ target
     wide = fi.FinalStrategy(params=fi.FinalParams(min_adv=0.0, band=0.5))
     r = wide.decide(fdf, caps.loc[D], raw, etf)
     assert "ap_forced_rebalance" in r.notes
-    assert check_target_weights(r.weights, etf, margin=0.0, expected_etfs=["E"])["min"] >= 0.27 - 1e-9
-    # AP ≥ 22% 時不觸發（即使 < 27%）
-    mid = {"E": {t: w for t, w in list(raw.items())[:10]}}
+    assert check_target_weights(r.weights, etf, margin=0.0, expected_etfs=["E"])["min"] >= AP_T - 1e-9
+    # AP ≥ trigger 時不觸發（即使 < target）
+    mid = {"E": {t: w for t, w in list(raw.items())[:15]}}
     ap_mid = check_target_weights(fixed, mid, margin=0.0, expected_etfs=["E"])["min"]
-    assert (ap_mid < 0.22) == st.force_rebalance(fixed, mid)
+    assert (ap_mid < AP_TRIG) == st.force_rebalance(fixed, mid)
 
 
 def test_recovery_target_after_a_breach_day():
@@ -367,12 +369,12 @@ def test_recovery_target_after_a_breach_day():
     st = fi.FinalStrategy(params=P)
     raw = st.bind(f, caps, None).base_weights(D)
     etf = fake_etf(raw)
-    assert check_target_weights(raw, etf, margin=0.0, expected_etfs=["E"])["min"] < 0.20     # 昨天已違規
+    assert check_target_weights(raw, etf, margin=0.0, expected_etfs=["E"])["min"] < ACTIVE_SHARE_MIN     # 昨天已違規
     r = st.decide(fa.factors_on(f, D), caps.loc[D], raw, etf)
     assert "ap_recovery" in r.notes and "ap_forced_rebalance" in r.notes
-    assert check_target_weights(r.weights, etf, margin=0.0, expected_etfs=["E"])["min"] >= 0.34 - 1e-9
+    assert check_target_weights(r.weights, etf, margin=0.0, expected_etfs=["E"])["min"] >= AP_REC - 1e-9
     ok = st.decide(fa.factors_on(f, D), caps.loc[D], {}, etf)
-    assert "ap_recovery" not in ok.notes                                                  # 沒有昨天違規 → 目標 27%
+    assert "ap_recovery" not in ok.notes                                                  # 沒有昨天違規 → 目標 ap_target
 
 
 # 台股單日漲跌幅限制 ±10%：連續兩日各 +30% 的路徑不可能發生，所以不納入保證範圍；
@@ -382,24 +384,24 @@ def test_single_shock_forces_next_day_rebalance_off_schedule(k):
     etf, targets, dates = etf_for(41)
     shock = 104
     panel, f, caps = shocked_panel(41, targets, {shock: k})
-    r = run(panel, f, caps, top10=etf)
+    r = run(panel, f, caps, top15=etf)
     d = r.daily
     T = dates[shock + 1]
     assert (shock + 1 - 61) % 5 != 0                                     # 隔天不是排程再平衡日
-    assert d.loc[dates[shock], "ap_min"] < 0.22                          # 衝擊日 Active Share 被打下來
+    assert d.loc[dates[shock], "ap_min"] < AP_TRIG                          # 衝擊日 Active Share 被打下來
     assert bool(d.loc[T, "rebalanced"]) and d.loc[T, "n_orders"] > 0     # 隔天硬規則：不等 5 日週期，當天再平衡
-    assert d.loc[T, "ap_min"] >= 0.22
-    assert max_consecutive((d["ap_min"] < 0.20).to_numpy()) <= 1
+    assert d.loc[T, "ap_min"] >= AP_TRIG
+    assert max_consecutive((d["ap_min"] < ACTIVE_SHARE_MIN).to_numpy()) <= 1
     assert r.violations == {"holdings": 0, "weight": 0, "cash": 0}
 
 
 @pytest.mark.parametrize("seed,sign", [(41, 1.1), (41, 0.9), (42, 1.1), (43, 1.1), (43, 0.9)])
-def test_limit_up_limit_down_streak_never_two_consecutive_days_below_20(seed, sign):
+def test_limit_up_limit_down_streak_never_two_consecutive_days_below_15(seed, sign):
     etf, targets, dates = etf_for(seed)
     panel, f, caps = shocked_panel(seed, targets, {105 + j: sign for j in range(8)})   # 連續 8 日漲停／跌停
-    r = run(panel, f, caps, top10=etf)
+    r = run(panel, f, caps, top15=etf)
     d = r.daily
-    assert max_consecutive((d["ap_min"] < 0.20).to_numpy()) <= 1
+    assert max_consecutive((d["ap_min"] < ACTIVE_SHARE_MIN).to_numpy()) <= 1
     assert r.violations == {"holdings": 0, "weight": 0, "cash": 0}
 
 
