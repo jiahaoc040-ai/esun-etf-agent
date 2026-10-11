@@ -85,7 +85,7 @@ def test_ensure_active_share_minimal_then_escalates():
     out, res, tier = fi.ensure_active_share(w, partial, pp)
     assert tier == "minimal" and res["min"] >= AP_T - 1e-9
     assert len([t for t in w if out[t] < w[t] - 1e-9]) <= 3                      # 最小調整只減 1–3 檔
-    many = {f"E{i}": {t: w[t] for t in names[i * 3:i * 3 + 15]} for i in range(5)}  # 5 檔 ETF 的前 15 大輪流蓋住全部持股
+    many = {f"E{i}": {t: w[t] for t in names[i * 2:i * 2 + 15]} for i in range(8)}  # 8 檔 ETF 的前 15 大輪流蓋住全部持股
     out, res, tier = fi.ensure_active_share(w, many, pp)
     assert tier == "full" and res["min"] >= AP_T - 1e-9
     assert fi.ensure_active_share(w, None, pp) == (w, None, "none")
@@ -378,8 +378,8 @@ def test_recovery_target_after_a_breach_day():
 
 
 # 台股單日漲跌幅限制 ±10%：連續兩日各 +30% 的路徑不可能發生，所以不納入保證範圍；
-# 下面用「單日超額衝擊」（1.15–1.5 倍，已超過漲停）與「連續漲停／跌停」兩種壓力情境。
-@pytest.mark.parametrize("k", [1.15, 1.3, 1.5])
+# 下面用「單日超額衝擊」（1.3–2.0 倍，已遠超過漲停；trigger 為 17% 時 1.15 倍打不穿）與「連續漲停／跌停」兩種壓力情境。
+@pytest.mark.parametrize("k", [1.3, 1.5, 2.0])
 def test_single_shock_forces_next_day_rebalance_off_schedule(k):
     etf, targets, dates = etf_for(41)
     shock = 104

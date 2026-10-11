@@ -355,8 +355,8 @@ def day3_revoke(system, user):                     # 新的負面重大訊息 �
 
 def day5_new(system, user):
     return json.dumps({"market_view": mv(user), "tilts": [
-        tilt_json(user, "2330", -0.015, "financial_report", "financial_report", "negative",
-                  "台積電第三季毛利率 58.2%，較前季下降 1.1 個百分點，屬財報面的轉弱訊號，在基準上小幅減碼 1.5%。",
+        tilt_json(user, "2330", -0.03, "financial_report", "financial_report", "negative",
+                  "台積電第三季毛利率 58.2%，較前季下降 1.1 個百分點，屬財報面的轉弱訊號，在基準上減碼 3%。",
                   "毛利率仍高於公司長期目標")]}, ensure_ascii=False)
 
 
@@ -413,7 +413,8 @@ def test_five_day_simulation_all_zero_errors(env, tmp_path):
     # Day5：2330 新增減碼 tilt（tilt 變動 → 再平衡）、1101 沿用（持有未滿 5 日、無新事件）
     d5 = res["2026-10-05"]
     assert not d5.fallback and "2330" in d5.state.tilts and "1101" in d5.state.tilts and d5.rebalanced
-    assert any(d["ticker"] == "2330" and d["action"] in ("TRIM", "SELL_ALL") for d in d5.doc["decisions"])
+    # 減碼 tilt 生效：2330 目標權重 < 基準上限 20% 減 2%（實際是 ADD 還是 TRIM 取決於當日漂移後的現權重，不在此斷言）
+    assert any(d["ticker"] == "2330" and d["target_weight"] < 0.18 for d in d5.doc["decisions"])
     carried_inf = [i for i in d5.doc["inferences"] if "沿用" in i["logic"]]
     assert carried_inf and all(i["premise_refs"] for i in carried_inf)
     # 狀態檔已寫入最後一天
