@@ -138,7 +138,7 @@ def main(argv=None) -> int:
     L.append(f"- **交易時點**：每 {P.rebalance_every} 個交易日再平衡、無交易帶 {P.band:.0%}；tilt 與前一日不同、或漂移保護觸發"
              f"（前日收盤權重 2330 > {P.guard_tsmc:.0%}／其他 > {P.guard_other:.1%}，或 Active Share < {ACTIVE_GUARD:.0%}）時，當天就交易。")
     L.append(f"- 市值來源：{'發行股數快照' if cap_src == 'issued_shares' else '60 日均成交值代理（暫代）'}。基準：(a) 150 檔等權；(b) 市值加權上限（2330 ≤ 20%、其他 ≤ 8%）。"
-             "樣本外 = T ≥ 2026-08-01（樣本內有名單偏誤，僅供參考）。Active Share 用 2026-10-06 的 ETF 持股靜態快照（1005 版辦法為前 15 大口徑；目前快照是舊格式的前 10 大，待用 Basic0007B 重抓後重跑）。\n")
+             "樣本外 = T ≥ 2026-08-01（樣本內有名單偏誤，僅供參考）。Active Share 用 2026-10-11 的 ETF 前 15 大持股靜態快照（MoneyDJ Basic0007B 全部持股頁，27 檔非純海外型主動型 ETF）。\n")
     L.append("## 1. 無 tilt 基線（只有 base_weights）\n")
     L.append("| 區間 | 天數 | 報酬 | 超額 vs (a) | 超額 vs (b) | MDD | Active Share 最低值 | 年換手 | 年化費用拖累 | 違規（持股/權重/現金） |")
     L.append("|---|---|---|---|---|---|---|---|---|---|")

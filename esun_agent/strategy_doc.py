@@ -257,7 +257,7 @@ def _sec_backtest(doc, decl, S):
         f"壓力測試（tilt 每天都變，{st['n']} 次）：樣本外平均 {pct(st['ret']['mean'])}，年換手 {st['turnover']['mean']:.0f}x——tilt 頻繁變動的成本很高，"
         "因此規則要求最短持有 5 日、無新事件不變動。",
         "回測不證明 Agent 能創造超額報酬：真實 Agent 的 tilt 有資訊含量與否，要靠初賽期間的實際表現檢驗。樣本外僅 "
-        f"{S['oos_days']} 個交易日，統計誤差大；Active Share 以 2026-10-06 的主動型 ETF 持股快照近似（前 15 大口徑）；未計股利與除權配股（官方期末才一次加回）。",
+        f"{S['oos_days']} 個交易日，統計誤差大；Active Share 以 2026-10-11 的主動型 ETF 前 15 大持股快照近似；未計股利與除權配股（官方期末才一次加回）。",
     ], size=9.5)
     mapping_box(doc, [
         "market_view.counter_evidence 與 inferences.counter_evidence：誠實寫出反方訊號；信心（confidence）不得高於證據所能支持的程度。",

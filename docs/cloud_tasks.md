@@ -4,13 +4,11 @@
 > 除息現金與除權配股都不在除權息日入帳（期末由主辦方一次加回）；首次繳交 2026/10/26 19:30 ～ 10/27 08:55。
 > 以下 T1–T6 為原始任務提示（保留歷史），已依新規則實作的部分見 CLAUDE.md。
 
-## 待辦（1005 版規則後）
+## 1005 版規則後的狀態
 
-- **用真實前 15 大資料重校準 Active Share**：目前環境連不到 MoneyDJ，`data/etf_top15/2026-10-06.json` 仍是舊格式（每檔 ETF 只有前 10 大，檔內 `note` 有標註）。
-  在可連線的環境執行 `python scripts/fetch_etf_holdings.py --save-raw`（Basic0007B 全部持股頁），把 `data/raw/etf/` 的頁面挑幾檔放進
-  `tests/fixtures/etf/real_b/` 並補真實頁面測試（目前新格式 fixture `moneydj_all_holdings.html` 是依舊頁面結構合成的）；
-  然後重跑 `python scripts/calibrate_active_share.py` 與 `python scripts/run_final_backtest.py`，確認 `FinalParams` 的 ap_target／ap_trigger／ap_recovery_target 仍滿足
-  「連續 2 日 < 15% 次數 = 0」，必要時調整參數（改參數＝改版，換 code_version）並同步 `config/strategy_declaration.json`。
+- ETF 持股已改用 MoneyDJ Basic0007B 真實前 15 大（`data/etf_top15/2026-10-11.json`，27 檔；3 檔純海外型跳過），真實頁面 fixture 在 `tests/fixtures/etf/real/moneydj_all_*.html`。
+- Active Share 參數已用真實前 15 大重新校準（`docs/active_share_calibration.md`）。**正式開跑前每日要重抓 ETF 持股**（`scripts/fetch_etf_holdings.py`），
+  並在開賽前再重跑一次 `scripts/calibrate_active_share.py` 確認參數仍成立（改參數＝改版，換 code_version，並同步 `config/strategy_declaration.json`）。
 
 每個任務各開一個雲端工作階段（claude.ai/code → 選這個 repo），把「Prompt」整段貼上即可。
 做完先 review PR、merge，再開下一個。依序做：T1 → T2 → T4 → T3 → T5，T6 最晚 10/20 前完成。

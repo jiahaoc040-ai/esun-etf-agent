@@ -8,11 +8,9 @@
   - 年換手、樣本外報酬（平均）
   python scripts/calibrate_active_share.py                       # 輸出 docs/active_share_calibration.md
 ETF 資料集：
-  legacy  data/etf_top15/ 的檔案；若檔案是舊格式（每檔只有前 10 大，標註 "note": LEGACY）則每檔只有 10 檔持股，
-          對 15 大口徑而言重疊被低估（樂觀）。
-  stress  壓力版：legacy 每檔補上 5 檔「我方基準也最重的大型股」（市值最大、尚未在清單內），權重 = 第 10 名 × 0.95…0.75。
-          真實的 ETF 第 11–15 大多半是大型股，重疊會比 legacy 高，stress 是保守估計。
-資料日期一旦用 Basic0007B 重抓成真實前 15 大，請重跑本腳本確認結論（見 docs/cloud_tasks.md）。
+  real    data/etf_top15/ 最新一份（MoneyDJ Basic0007B 全部持股頁的真實前 15 大，27 檔）。
+  stress  壓力版：real 的每檔 ETF 把第 11–15 名換成「市值最大、尚未在清單內」的大型股（權重照原本第 11–15 名），模擬 ETF 之後往大型股靠攏、
+          重疊變多的情況；是比 real 更保守的對照。
 """
 import argparse
 import sys
@@ -36,15 +34,16 @@ OOS_START = "2026-08-01"
 G: dict = {}
 
 
-def stress_extend(top: dict[str, dict[str, float]], big: list[str], n_total: int = 15) -> dict[str, dict[str, float]]:
+def stress_extend(top: dict[str, dict[str, float]], big: list[str], keep: int = 10) -> dict[str, dict[str, float]]:
+    """每檔 ETF 保留前 keep 名，第 keep+1 名之後換成「市值最大且尚未在清單內」的大型股，沿用被換掉的權重。"""
     out = {}
     for etf, h in top.items():
-        h = dict(h)
-        last = min(h.values())
-        extra = [t for t in big if t not in h][:max(0, n_total - len(h))]
-        for i, t in enumerate(extra):
-            h[t] = round(last * (0.95 - 0.05 * i), 6)
-        out[etf] = h
+        ranked = sorted(h.items(), key=lambda kv: (-kv[1], kv[0]))
+        new = dict(ranked[:keep])
+        extra = [t for t in big if t not in new]
+        for (_, w), t in zip(ranked[keep:], extra):
+            new[t] = w
+        out[etf] = new
     return out
 
 
@@ -81,11 +80,11 @@ def main(argv=None) -> int:
 
     panel = load_panel()
     caps, _ = market_cap(panel)
-    legacy = load_top15()
+    real = load_top15()
     big = list(caps.iloc[-1].dropna().sort_values(ascending=False).index[:30])
     G.update(panel=panel, factors=compute_factors(panel), caps=caps,
-             top={"legacy": legacy, "stress": stress_extend(legacy, big)})
-    jobs = [(ds, t, s if p == 5 else 1000 + s, p) for ds in ("legacy", "stress") for t in targets
+             top={"real": real, "stress": stress_extend(real, big)})
+    jobs = [(ds, t, s if p == 5 else 1000 + s, p) for ds in ("real", "stress") for t in targets
             for p, n in ((5, a.sims), (1, a.stress_sims)) for s in range(n)]
     with Pool(a.jobs) as pool:
         df = pd.DataFrame(pool.map(one, jobs, chunksize=4))
@@ -94,10 +93,10 @@ def main(argv=None) -> int:
          "方法：每個候選 target（trigger = target − 5pt、recovery = target + 7pt）各跑隨機 tilt 模擬"
          f"（每 5 日重抽 × {a.sims} 次；每日重抽壓力測試 × {a.stress_sims} 次），逐日檢查 Active Share（兩種權重口徑取小、對所有主動型 ETF 取最小）。"
          "樣本 = 2025-04 起至 2026-10 的回測全期間。**「連續 2 日 < 15%」次數 = 0 是硬條件**，單日 < 15% 天數與換手是成本面參考。\n",
-         "ETF 資料集：legacy = 目前 repo 內的舊格式快照（每檔 ETF 只有前 10 大，重疊被低估）；"
-         "stress = 每檔補 5 檔大型股成前 15 大的保守版（重疊偏高）。真實前 15 大資料需用 Basic0007B 重抓後重跑本腳本。\n"]
+         "ETF 資料集：real = data/etf_top15/ 最新一份（MoneyDJ Basic0007B 真實前 15 大）；"
+         "stress = real 把每檔 ETF 的第 11–15 名換成市值最大的大型股（更保守的對照）。\n"]
     chosen = {}
-    for ds in ("legacy", "stress"):
+    for ds in ("real", "stress"):
         L.append(f"## 資料集：{ds}\n")
         L.append("| target | 模擬 | 連續 2 日 < 15% 次數 | 單日 < 15% 天數（合計） | 全期間最低值 | 年換手（平均） | 樣本外報酬（平均） | 平均交易日 |")
         L.append("|---|---|---|---|---|---|---|---|")

@@ -178,7 +178,7 @@ def test_check_target_weights_margin_and_missing():
     assert r2["ok"] == r["ok"] and r2["safe"] is False
 
 
-# ---- 真實 MoneyDJ 頁面：**舊格式**（Basic0007 前 10 大；tests/fixtures/etf/real/，本機於 2026-10-06 存下），解析時 n=10
+# ---- 真實 MoneyDJ 頁面：**舊格式**（Basic0007 前 10 大；tests/fixtures/etf/real/moneydj_<code>.html，2026-10-06 存下），解析時 n=10
 REAL = FX / "real"
 
 
@@ -248,3 +248,54 @@ def test_check_target_weights_uses_top15_and_15pct_floor():
     # 11 檔相同 → 13.5% < 15% → 違規
     mine = dict(list(big.items())[:11]) | {f"90{j}": 0.03 for j in range(4)}
     assert not eh.check_target_weights(mine, {"E": dict(big)}, margin=0.0, expected_etfs=["E"])["ok"]
+
+
+# ---- 真實 MoneyDJ 全部持股頁（Basic0007B；tests/fixtures/etf/real/moneydj_all_*.html，2026-10-11 存下）
+def real_b(code):
+    return eh.parse_moneydj((REAL / f"moneydj_all_{code}.html").read_text(encoding="utf-8"), code)
+
+
+def test_real_b_00981A_top15_and_futures_row_excluded():
+    r = real_b("00981A")
+    assert r["data_date"] == "2026-10-08" and len(r["holdings"]) == 15 and len(r["raw"]) == 51
+    assert list(r["holdings"].items())[:3] == [("2330", 0.1035), ("2383", 0.0958), ("2454", 0.0819)]
+    assert ["台指期貨 2026/10(FITXN*1.TF)", 2.3] in r["raw"]          # 原始列保留
+    assert not any(".TF" in t or "FITXN" in t for t in r["holdings"])  # 但不算進前 15 大
+    assert sum(r["holdings"].values()) < 1.0
+
+
+def test_real_b_00985A_futures_named_by_company():
+    r = real_b("00985A")   # 「台積電期貨(FICDFN*1.TF)」不是 2330 股票，不可併入台積電持股
+    assert r["data_date"] == "2026-10-08" and r["holdings"]["2330"] == 0.1332 and len(r["holdings"]) == 15
+    assert ["台積電期貨(FICDFN*1.TF)", 2.77] in r["raw"] and not any("FICDFN" in t for t in r["holdings"])
+
+
+def test_real_b_global_etfs_keep_non_tw_symbols():
+    r = real_b("00986A")
+    assert r["data_date"] == "2026-10-07" and r["holdings"]["NVDA.US"] == 0.064 and r["holdings"]["2330"] == 0.0789
+    r = real_b("00988A")
+    assert r["data_date"] == "2026-10-07" and r["holdings"]["LITE.US"] == 0.0773 and r["holdings"]["3037"] == 0.0634
+    assert len(r["holdings"]) == 15
+
+
+def test_committed_top15_snapshot_matches_real_pages_and_is_complete():
+    snap = json.loads((Path(__file__).parent.parent / "data" / "etf_top15" / "2026-10-11.json").read_text(encoding="utf-8"))
+    src = eh.load_sources()
+    expected = {c for c, s in src.items() if not s["overseas"]}
+    assert set(snap["top15"]) == expected and len(expected) == 27 and snap["stale"] == {}
+    assert all(len(h) == 15 and 0.2 < sum(h.values()) < 1.0 for h in snap["top15"].values())
+    assert set(snap["raw"]) == expected
+    for code in ("00981A", "00985A", "00986A", "00988A"):                 # 快照與存下的原始頁面一致
+        r = real_b(code)
+        assert snap["top15"][code] == r["holdings"] and snap["raw"][code] == r["raw"]
+        assert snap["data_dates"][code] == r["data_date"]
+    assert eh.load_top15() == snap["top15"]                               # 預設讀取最新一份
+
+
+def test_active_share_vs_real_etfs_of_cap_weighted_core():
+    """真實 ETF 前 15 大 vs 一個市值加權風格的前 15 大：確認整條串接可算，且 2330 單押時 Active Share 很高。"""
+    top = eh.load_top15()
+    only_tsmc_heavy = {"2330": 0.25, "2317": 0.1, "2454": 0.1, "2308": 0.05, "2382": 0.05, "2881": 0.05, "2882": 0.05,
+                       "2891": 0.04, "2412": 0.04, "1301": 0.03, "1303": 0.03, "2002": 0.03, "1216": 0.03, "2886": 0.03, "2884": 0.03}
+    r = eh.check_target_weights(only_tsmc_heavy, top, margin=0.0, expected_etfs=list(top))
+    assert r["complete"] and r["ok"] and r["min"] > 0.15
