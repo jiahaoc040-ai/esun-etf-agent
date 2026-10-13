@@ -1,12 +1,13 @@
 """Active Share 檢查（比賽辦法 六(十三)）。
 
   Active Share = 1/2 × Σ |Wi(投資組合) − Wi(Benchmark)|
-比較對象：「我方持股前 10 大」vs「每一檔主動型 ETF 的前 10 大持股」，任一檔 < 20% 且連續 2 日 → 可能取消資格。
+比較對象（1005 更新）：「我方持股前 15 大」vs「每一檔主動型 ETF 的前 15 大持股」，任一檔 < 15% 且連續 2 日 → 可能取消資格。
+ETF 端若只取得前 10 大（MoneyDJ 多數只揭露 10 檔），就以取得的檔數比較（近似；內部目標留緩衝）。
 
 辦法沒寫清楚權重口徑，因此兩種都算、取較嚴（較小）者：
   - normalized：兩邊前 10 大各自重新歸一到 100%（最常見的算法）
   - raw：直接用占淨值比例
-ETF 前 10 大持股需另外抓（投信官網/月報，authority=fininst），格式 {etf_code: {ticker: weight}}。
+ETF 前 N 大持股需另外抓（投信官網/月報，authority=fininst），格式 {etf_code: {ticker: weight}}。
 """
 from .config import ACTIVE_SHARE_MIN, ACTIVE_SHARE_TOP_N
 

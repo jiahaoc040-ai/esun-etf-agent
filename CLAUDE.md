@@ -15,7 +15,7 @@
 - 只能持有 data/reference/universe_150.csv 的 150 檔；持股 20–30 檔
 - 單檔 ≤ 10%，2330 ≤ 25%；現金 0 ≤ cash < 25%（以 NAV 計）
 - 整股（1000 股倍數）、只做現股；成交價 = 當日成交均價；手續費 0.1425% 買賣都收、證交稅 0.3% 只賣出
-- 前 10 大持股 vs 任一主動型 ETF 前 10 大，Active Share ≥ 20%（連 2 日低於 → 取消資格）
+- 前 15 大持股 vs 任一主動型 ETF 前 15 大，Active Share ≥ 15%（比賽辦法 1005 更新；連 2 日低於 → 取消資格）。ETF 端目前只抓得到前 10 大，以取得的檔數比較
 - orders 必須由 `esun_agent.orders.derive_orders` 機械產生，不可手調（C2）
 - 賣出股數 ≤ 主辦方後台結算庫存（C13，超賣整份拒收）
 - market_view.posture 是承諾：委託淨流向與現金區間要對得上（C12）
@@ -29,12 +29,18 @@
 - `esun_agent/ledger.py` 記帳（成交、NAV、與官方庫存對帳）
 - `esun_agent/active_share.py` Active Share 檢查
 - `esun_agent/dplan_validate.py` 提交前驗證（schema + C1/C2/C6/C9/C11/C12/C13/C14 + 覆蓋）
-- `esun_agent/strategy/final.py` 正式策略：合規基準 A（`base_weights`）＋ Agent 加減碼（`apply_tilts`），參數 `FinalParams`
-- `esun_agent/agent/` D-Plan 組裝器（T4）：`observations.py`（資料→sources/observations）、`llm.py`（Gemini 預設／Anthropic；LLM 只輸出 market_view 與 tilt）、`tilt_state.py`（runs/state/tilts.json，最短持有 5 日）、`plan.py`（目標權重→decisions/orders/posture/funding_for）、`assemble.py`（`assemble_day`：最多 3 次重試，失敗降級為零 tilt 保底）
-- `prompts/` LLM 提示詞模板（改模板 = 改版）
-- `config/strategy_declaration.json` 策略宣告（ETF「主動台灣核心優選 AI」，status=final；主題／理念／基準／tilt 許可依據），與 `FinalParams` 一致（有測試）
-- Active Share 硬規則：目標 ≥ 27%；前日收盤 < 22% → 當日必須再平衡到 ≥ 27%（不受無交易帶與 5 日週期限制）；前日已 < 20% → 補到 ≥ 34%
-- `docs/final_strategy_backtest.md`、`docs/backtest_T3.md` 回測與歸因報告
+- **正式策略 v2（集中主題＋事件驅動）**
+  - `esun_agent/strategy/candidates.py` 每日候選池（約 30 檔）：投信 5/10 日淨買超（成交值標準化）、20 日相對強度、成交值放大，減主動型 ETF 前 15 大重疊扣分；2330 固定列入。參數 `CandidateParams`
+  - `esun_agent/strategy/conviction.py` 權重換算（高 9%／中 6%，2330 高 15%／中 10%，單檔上限 9%、2330 20%）、湊檔數部位（市值前 30 大各 1–2%，總持股 21–24）、現金 2–5%、Active Share 修正（內部 ≥ 20%）、無交易帶 1.5%、換股紀律 `discipline`（持有 ≥ 3 日、每日最多換 4 檔、停損 −12%、事件前一日凍結）。參數 `ConvictionParams`
+  - `config/event_calendar.json` FOMC／NVIDIA 財報／美國大選（estimated=true 者要在公告後更新）
+  - `esun_agent/agent/conviction_agent.py` 正式 D-Plan 組裝器 `assemble_conviction_day`：LLM 只輸出 market_view、picks（10–12 檔＋high/medium＋obs_ids）、exits；程式換算權重；最多 3 次重試，失敗 → 凍結既有名單 → 再不行改用合規基準 A。狀態 `runs/state/conviction.json`（`conviction_state.py`）
+  - `esun_agent/conviction_backtest.py`＋`scripts/run_conviction_backtest.py` 代理回測（候選池前 11 名代替 LLM）→ `docs/conviction_backtest.md/.json`
+- **降級保底（舊版 v1）**：`esun_agent/strategy/final.py` 合規基準 A（`base_weights`／`FinalStrategy.decide`）＋ tilt，參數 `FinalParams`；`agent/assemble.py`（`assemble_day`）與 `tilt_state.py` 保留可用
+- `esun_agent/agent/` 共用：`observations.py`（資料→sources/observations，含 candidate_screen／trust_flow／position_pnl／filler_universe／event_calendar）、`llm.py`（Gemini 預設／Anthropic；`parse_picks` v2、`parse_proposal` v1）、`plan.py`（目標權重→decisions/orders/posture/funding_for；單日異動 > 30 檔時延後一部分，schema 上限）
+- `prompts/` LLM 提示詞模板（`conviction_*.md` 為正式版；改任何模板 = 改版）
+- `config/strategy_declaration.json` 策略宣告 v2（ETF「主動台灣核心優選 AI」，status=final）：`portfolio_rules`＝`ConvictionParams`、`candidate_rules`＝`CandidateParams`、`fallback.portfolio_rules`＝`FinalParams`（有測試）
+- Active Share（v2）：內部目標 ≥ 20%；前日收盤 < 17% → 當日強制再平衡；前日已 < 15% → 補到 ≥ 25%
+- `docs/conviction_backtest.md`（v2）、`docs/final_strategy_backtest.md`、`docs/backtest_T3.md`（v1，舊 Active Share 口徑）回測與歸因報告
 - `scripts/validate_dplan.py` CLI
 - `tests/` — 修改任何東西後執行 `python -m pytest -q`，必須全綠
 

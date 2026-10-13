@@ -2,8 +2,9 @@
 
 版型沿用主辦方的「ETF 投資策略說明文件_參賽隊伍繳交格式_v1.docx」：第一頁三欄表單（ETF 名稱、投資主題、投資理念）
 由 config/strategy_declaration.json 填入（名稱 ≤20 字且開頭須為「主動」、主題 ≤50 字、理念 100～300 字，不符就不產檔）。
-表單之後是「補充說明」（form_only=True 時省略）：策略主體、超額來源、回測摘要、與每日 D-Plan 的對應。
-所有文字內容都來自宣告檔與 docs/final_strategy_backtest.json，不另寫一份；數字隨回測結果更新。
+表單之後是「補充說明」（form_only=True 時省略）：投組結構、候選池與 Agent 選股、換股紀律、代理回測摘要、降級保底、
+與每日 D-Plan 的對應。所有文字內容都來自宣告檔（v2：集中主題＋事件驅動）與 docs/conviction_backtest.json，
+不另寫一份；數字隨回測結果更新。
 """
 from __future__ import annotations
 
@@ -20,15 +21,21 @@ from .config import ROOT
 from .strategy.declaration import load_declaration, validate_submission
 
 TEMPLATE = ROOT / "docs" / "competition" / "玉山挑戰賽_ETF投資策略說明文件_參賽隊伍繳交格式_v1.docx"
-SUMMARY_PATH = ROOT / "docs" / "final_strategy_backtest.json"
+SUMMARY_PATH = ROOT / "docs" / "conviction_backtest.json"
 OUTPUT_PATH = ROOT / "output" / "strategy_doc.docx"
 FORM_FONT = "標楷體"
 BODY_FONT = "微軟正黑體"
 BLUE = RGBColor(0x1F, 0x4E, 0x79)
 
-# 宣告 → 每日 D-Plan 的對應（observation.topic 與宣告檔的 tilt 依據 id 相同；程式在 esun_agent/agent/ 內檢查）
+# 宣告 → 每日 D-Plan 的對應（observation.topic 與宣告檔的依據 id 相同；程式在 esun_agent/agent/ 內檢查）
 MARKET_TOPICS = [("tw_market", "台股整體（名單內 150 檔等權報酬、漲跌家數、成交值）"), ("inst_flow", "外資、投信買賣超金額"),
                  ("taifex_night", "台指期夜盤"), ("us_overnight", "美股／ADR 收盤")]
+STRATEGY_TOPICS = [("candidate_screen", "候選分數與組成（排序用，不可單獨作為依據）"),
+                   ("trust_flow", "投信近 5／10 日淨買超占成交值、連續買超天數"),
+                   ("position_pnl", "高信心部位的持有天數與相對成本報酬（停損、最短持有）"),
+                   ("filler_universe", "市值前 30 大的湊檔數部位"),
+                   ("event_calendar", "FOMC／NVIDIA 財報／美國大選排程（事件前一交易日）"),
+                   ("weights_vs_target", "現權重與目標權重的偏離（無交易帶）")]
 
 
 class DocError(ValueError):
@@ -42,7 +49,7 @@ def pct(x: float, d: int = 1, sign: bool = True) -> str:
 def load_summary(path: Path | None = None) -> dict:
     p = path or SUMMARY_PATH
     if not p.exists():
-        raise DocError(f"找不到回測摘要 {p}，請先執行 python scripts/run_final_backtest.py")
+        raise DocError(f"找不到回測摘要 {p}，請先執行 python scripts/run_conviction_backtest.py")
     return json.loads(p.read_text(encoding="utf-8"))
 
 
@@ -155,124 +162,136 @@ def _fill_form(doc, decl: dict) -> None:
 
 # ----------------------------------------------------------------------------- 補充說明各節
 
-def _sec_core(doc, decl, S):
+def _sec_structure(doc, decl, S):
     r = decl["portfolio_rules"]
     heading(doc, "補充說明")
     para(doc, "以下內容補充說明上表的宣告，並標示每段宣告將如何出現在每日 D-Plan（market_view、inferences、decisions）。", size=9, italic=True)
-    heading(doc, "一、主體：市值加權的合規基準", 2)
-    para(doc, decl["benchmark"]["definition"], size=10)
-    table(doc, ["項目", "規則"], [
+    heading(doc, "一、投組結構：集中的高信心部位＋湊檔數部位", 2)
+    para(doc, decl["theme"]["summary"], size=10)
+    table(doc, ["部位", "規則"], [
         ["投資範圍", decl["etf"]["market"]],
-        ["持股", f"基準取前 {r['n_base']} 檔；持股維持 {r['min_hold']}–30 檔（內部上限 {r['max_hold']} 檔，保留 1 檔給停牌賣不掉的部位）"],
-        ["個股上限", f"基準：2330 ≤ {r['base_cap_tsmc']:.0%}、其他 ≤ {r['base_cap_other']:.0%}；加減碼後：2330 ≤ {r['tilt_cap_tsmc']:.0%}、其他 ≤ {r['tilt_cap_other']:.1%}（官方上限 25%／10%，留出價格漂移空間）"],
-        ["現金", f"目標 {r['cash_target']:.0%}，區間 {r['cash_low']:.0%}–{r['cash_high']:.0%}；委託後預估現金比不得低於 2%（不足時按比例縮減買進）"],
-        ["Active Share", f"與任一主動型 ETF 前 10 大持股的 Active Share 目標 ≥ {r['ap_target']:.0%}（官方門檻 20%）。基準權重不足時，先用最小調整法"
-                          "（只動 1–3 檔重疊最大的標的，減下的權重分給第 11–28 名），不夠再逐步放寬"],
-        ["Active Share 硬規則", f"前日收盤 Active Share < {r['ap_trigger']:.0%} → 當日必須再平衡到 ≥ {r['ap_target']:.0%}，不受無交易帶與 5 日週期限制；"
-                                  f"前日收盤已經 < 20% → 當日補到 ≥ {r['ap_recovery_target']:.0%}，避免連續 2 日低於官方門檻"],
-        ["漂移保護", f"前日收盤權重 2330 > {r['guard_tsmc']:.0%} 或其他個股 > {r['guard_other']:.0%} → 當日提前再平衡"],
-        ["再平衡", f"每 {r['rebalance_every']} 個交易日一次；無交易帶 {r['band']:.0%}（權重差距在帶內不交易，避免往返約 0.6% 的成本）；"
-                    "Agent 的 tilt 與前一日不同、或漂移保護觸發時，當天可以交易"],
+        ["高信心部位", f"{r['n_conv_min']}–{r['n_conv_max']} 檔，由 AI Agent 從候選池挑選並給信心等級：高 = {pct(r['w_high'], 0, False)}、"
+                     f"中 = {pct(r['w_mid'], 0, False)}（2330：高 {pct(r['w_tsmc_high'], 0, False)}、中 {pct(r['w_tsmc_mid'], 0, False)}）；"
+                     "名目權重合計過大時等比例縮小、過小時在上限內等比例放大"],
+        ["單檔上限", f"{pct(r['cap_other'], 0, False)}（官方 10%，留 1% 給價格漂移），2330 為 {pct(r['cap_tsmc'], 0, False)}（官方 25%）；"
+                   f"前日收盤超過 {pct(r['guard_other'], 1, False)}（2330 {pct(r['guard_tsmc'], 0, False)}）當日減回"],
+        ["湊檔數部位", f"市值前 {r['filler_pool']} 大、且不在高信心名單者，取市值最大的若干檔各 {pct(r['filler_min'], 0, False)}–{pct(r['filler_max'], 0, False)}，"
+                     f"使總持股 {r['n_total_min']}–{r['n_total_max']} 檔（官方 20–30；內部下限 21 檔，建倉當天若一檔停牌買不到仍有 20 檔）"],
+        ["現金", f"目標 {pct(r['cash_target'], 0, False)}，區間 {pct(r['cash_low'], 0, False)}–{pct(r['cash_high'], 0, False)}；"
+               "委託後預估現金比 ≥ 2% ＋ 0.03 × 買進金額占淨值（成交均價可能高於前日收盤），不足時等比例縮減買進"],
+        ["Active Share", f"我方前 15 大 vs 每檔主動型 ETF 前 15 大，官方 ≥ 15%、內部目標 ≥ {pct(r['ap_target'], 0, False)}；"
+                         "不足時先把重疊的湊檔股換成不重疊者，再把重疊最大的高信心部位每次降 1.5%（最低 3%）；仍不足則退回 Agent 換股"],
+        ["Active Share 硬規則", f"前日收盤 < {pct(r['ap_trigger'], 0, False)} → 當日強制再平衡到 ≥ {pct(r['ap_target'], 0, False)}；"
+                                f"前日收盤已 < 15% → 當日補到 ≥ {pct(r['ap_recovery_target'], 0, False)}，避免連續 2 日低於官方門檻"],
+        ["交易", f"每日依名單重算目標權重；既有持股差距 < {pct(r['band'], 1, False)}（無交易帶）不交易；單日異動超過 30 檔（schema 上限）時分兩天完成"],
     ], widths=[85, 380])
     mapping_box(doc, [
-        "market_view：以名單整體表現（tw_market）、法人買賣超（inst_flow）、台指期夜盤（taifex_night）、美股／ADR（us_overnight）"
-        "等市場級 observation 為 basis_refs，說明 regime／stance；posture 與現金區間由實際委託推得，不由 Agent 自填。",
-        "inferences：再平衡日以「依合規基準（市值加權、2330 ≤ 20%、個股 ≤ 8%、取前 28 檔、Active Share ≥ 27%）重新計算目標權重，"
-        "偏離無交易帶者才調整」為推論；非再平衡日或差距在無交易帶內者，以「基準權重未偏離無交易帶」為推論，並寫入 no_trade_decisions。",
-        "decisions／orders：target_weight 為基準權重加上有效 tilt；委託一律由官方公式 derive_orders 機械推導，Agent 不決定股數。",
+        "decisions：target_weight 由信心等級機械換算（高 9%／中 6%），湊檔股各 1–2%；委託一律由官方公式 derive_orders 推導，Agent 不決定權重或股數。",
+        "inferences：每檔高信心部位一則推論（引用 Agent 選的 observation）；湊檔數部位一則推論（引用 filler_universe）；"
+        "未偏離無交易帶者以「差距在無交易帶內」推論寫入 no_trade_decisions。",
+        "market_view：posture 與現金區間由實際委託推得，不由 Agent 自填；regime／stance 須與淨買賣方向一致。",
     ])
 
 
-def _sec_alpha(doc, decl, S):
+def _sec_selection(doc, decl, S):
+    c = decl["candidate_rules"]
+    heading(doc, "二、超額來源：候選池＋AI Agent 依公開事件選股", 2)
+    para(doc, "程式每日從 150 檔用資料篩出候選池，Agent 只能從候選池（或目前名單）挑選；候選分數負責排序，"
+              "入選理由必須是具名的公開資訊。", size=10)
+    table(doc, ["候選池", "設定"], [
+        ["檔數與流動性", f"每日約 {c['n_candidates']} 檔；20 日均成交值 ≥ {c['min_adv'] / 1e8:.0f} 億（9% 部位約 9000 萬，低於日成交值的 30%）"],
+        ["分數組成", f"投信近 5 日淨買超占成交值 ×{c['w_trust5']}、近 10 日 ×{c['w_trust10']}；20 日相對強度 ×{c['w_rs20']}；"
+                   f"成交值放大（5 日／20 日均量）×{c['w_valchg']}（皆為橫斷面 z 分數）"],
+        ["差異化扣分", f"減去 {c['overlap_penalty']} × 出現在主動型 ETF 前 15 大的比例：越多主動型 ETF 重押的股票分數越低"],
+        ["固定列入", "、".join(c["always_include"]) + "：重疊扣分會讓它永遠排不進前 30 名，但宣告允許 Agent 選它（上限 20%）"],
+    ], widths=[85, 380])
+    table(doc, ["入選依據", "資料來源（authority）", "例子"],
+          [[b["label"], "、".join(b["authority"]), "；".join(b["examples"])] for b in decl["selection"]["allowed_bases"]],
+          widths=[70, 90, 305])
+    heading(doc, "Agent 的輸出與程式檢查", 2)
+    bullets(doc, decl["selection"]["requirements"] + [
+        "信心等級：" + "；".join(decl["selection"]["conviction_levels"].values()) + "。"])
+    mapping_box(doc, [
+        "observations：candidate_screen（候選分數與組成，排序用）、trust_flow（投信 5／10 日淨買超、連買天數）以及月營收、財報、法說會、重大訊息事件；"
+        "topic 與依據 id 相同，來源 authority 如上表。",
+        "inferences：每檔高信心部位的 premise_refs 指向該股的依據 observation，logic 說明「事實 → 為何高／中信心 → 與主題的關係」，"
+        "counter_evidence 寫反方訊號；主動移出者另有一則移出推論。",
+    ])
+
+
+def _sec_discipline(doc, decl, S):
     r = decl["portfolio_rules"]
-    heading(doc, "二、超額來源：Agent 依公開資訊的小幅加減碼（tilt）", 2)
-    para(doc, "AI Agent 只在有具名公開資訊時，才在基準權重上做加碼或減碼；它不決定權重或股數，只提出『哪一檔、方向、依據、理由』，"
-              "金額上限與所有風控由程式檢查。", size=10)
-    table(doc, ["tilt 依據", "資料來源（authority）", "例子"],
-          [[b["label"], "、".join(b["authority"]), "；".join(b["examples"])] for b in decl["tilt"]["allowed_bases"]], widths=[70, 90, 305])
-    heading(doc, "紀律（程式強制，違反就退回重寫）", 2)
-    bullets(doc, [
-        f"單檔 |tilt| ≤ {r['max_delta']:.0%}；全部 tilt 的主動偏離 Σ|tilt|/2 ≤ {r['max_active']:.0%}；可加入基準前 28 名以外、投資範圍內的股票，但持股維持 20–30 檔。",
-        "每筆 tilt 必須引用至少一則「該股、屬於所宣告依據、來源 authority 符合上表、且發布時間早於決策日 19:30」的 observation；禁止以股價走勢、傳聞或無來源消息為依據。",
-        f"tilt 最短持有 {5} 個交易日：未滿期間只有「新事件且方向相反」才可提前撤銷、縮小或反向，不可同方向加碼；無新事件時一律沿用前一日 tilt。",
-        "沒有足夠證據就不做 tilt（維持基準權重、寫入 no_trade_decisions）。",
-        "tilt 套用後重新檢查單檔上限、現金、持股檔數與 Active Share；不合格時依序縮放、截斷或修正，必要時退回 Agent 重寫（最多 3 次，仍不合格則降級為零 tilt 的保底方案）。",
-    ])
-    heading(doc, "低回檔與紀律化如何落實", 2)
-    bullets(doc, [
-        "核心部位跟隨市值加權基準，tilt 的總偏離與單檔幅度都有明確上限，即使 Agent 判斷失誤，損失也有界。",
-        "個股與 2330 的上限、3% 現金、委託後現金比 ≥ 2% 的檢查，限制了集中度與被迫賣出的風險。",
-        "無交易帶與 5 日再平衡避免追價與過度交易；tilt 最短持有 5 日避免因單日雜訊來回切換。",
-    ])
+    heading(doc, "三、換股紀律（程式強制，違反就退回 Agent 重寫）", 2)
+    bullets(doc, list(decl["discipline"][k] for k in ("min_hold_days", "max_swaps", "stop_loss", "event_blackout")) + [
+        "名單與信心等級沒有新證據就續抱；每次換股往返成本約 0.6%，候選分數變動不是換股理由。",
+        f"狀態（名單、進場日、引用證據）存於 {decl['discipline']['state']}，隔日重建成 observation，續抱的推論可重新引用原證據。"])
+    from .strategy.conviction import load_event_calendar
+    evs = [e for e in load_event_calendar() if "2026-10-20" <= e["date"] <= "2026-11-30"]
+    if evs:
+        table(doc, ["初賽期間高波動事件（美國時間）", "前一交易日的處理"],
+              [[f"{e['date']} {e['name']}" + ("（推估）" if e.get("estimated") else ""), "不新增、不升級，既有部位凍結"] for e in evs],
+              widths=[230, 235])
     mapping_box(doc, [
-        "observations：每一種 tilt 依據在 D-Plan 的 topic 與依據 id 相同——" + "、".join(f"{b['id']}（{b['label']}）" for b in decl["tilt"]["allowed_bases"]) + "；來源 authority 如上表。",
-        "inferences：每筆 tilt 一則推論，premise_refs 指向上述 observation，logic 說明『事實 → 為何支持加碼／減碼 → 與本 ETF 主題的關係』，"
-        "counter_evidence 寫反方訊號；沿用中的 tilt 以「沿用 YYYY-MM-DD 起的○○ tilt ±x%…今日沒有新事件推翻」為推論，並重新引用原事件。",
-        "decisions：有 tilt 的個股，decision 引用該 tilt 的推論；撤銷 tilt 時推論說明相反的新事件。",
-        "market_view：regime／stance 須與實際操作方向相符（宣告 defensive 卻淨買超、或 aggressive 卻淨賣超會被退回）；counter_evidence 寫明降級條件。",
+        "observations：position_pnl（持有天數、相對成本報酬）與 event_calendar（事件排程）。",
+        "inferences：停損出場以 position_pnl 為前提；事件前一交易日的 no_trade 推論引用 event_calendar。",
+        "decisions：停損 → SELL_ALL；未滿 3 日者不會出現在賣出；事件前一交易日不會出現 BUY。",
     ])
 
 
-def _sec_factors(doc, decl, S):
-    heading(doc, "主要選股因子", 2)
-    table(doc, ["類別", "本 ETF 使用的因子"], [
-        ["事件／資訊", "財報公告、月營收、法說會、重大訊息（以上來自公開資訊觀測站）"],
-        ["籌碼", "投信連續買賣超（三大法人中僅用投信；證交所／櫃買中心公布）"],
-        ["風險控管", "個股與 2330 權重上限、現金下限、Active Share 下限、tilt 總偏離上限、無交易帶、漂移保護"],
-        ["基準", "市值（還原收盤價 × 發行股數）加權；市場級背景資訊（名單整體表現、法人、夜盤、美股）僅用於 market_view"],
-    ], widths=[70, 395])
-    para(doc, "本 ETF 不使用價格動能或技術指標作為 tilt 依據。", size=9, italic=True)
-    mapping_box(doc, [
-        "inferences：每筆 tilt 的推論引用上表因子對應的 observation（topic 即依據 id），conclusion 標明依據名稱（財報、月營收、法說會、投信連續買賣超、重大訊息）；"
-        "沒有引用上述因子事實的 tilt 不會通過檢查，也不會出現在 decisions。",
-        "market_view：市場級背景（名單整體、法人、夜盤、美股）只作為 regime／stance 的依據，不作為個股 tilt 的依據。",
-    ])
+def _p(x):
+    return pct(x, 0, False)
 
 
 def _sec_backtest(doc, decl, S):
-    b = S["baseline_oos"]
-    rt = S["random_tilt"]
-    st = S["stress_daily_tilt"]
-    bm = S["benchmarks_oos"]
-    heading(doc, "三、回測摘要", 2)
-    para(doc, f"資料期間 {S['universe_dates'][0]} ～ {S['universe_dates'][1]}。投資範圍 150 檔名單是 2026 年 7 月底以市值選出，"
-              f"因此 {S['oos_start']} 之前的回測有前視與倖存者偏誤，只能用來比較參數的相對優劣；"
-              f"本表只列樣本外（{S['oos_start']} 起，{S['oos_days']} 個交易日）。基準與策略皆含同樣的名單偏誤，"
-              "所以看相對基準的差異比看絕對報酬可靠。", size=10)
-    rows = [
-        ["150 檔等權（基準 a）", pct(bm["a_equal_weight"]), pct(bm["a_mdd"]), "—", "—"],
-        ["市值加權上限（基準 b）", pct(bm["b_cap_weight_capped"]), pct(bm["b_mdd"]), "—", "—"],
-        ["本 ETF 基準（無 tilt）", pct(b["total_return"]), pct(b["mdd"]), pct(b["ap_min"], 1, False), f"{b['turnover_ann']:.1f}x"],
-        ["本 ETF＋隨機 tilt（平均，模擬 Agent 雜訊 ×%d）" % rt["n"], pct(rt["ret"]["mean"]), pct(rt["mdd"]["mean"]),
-         pct(rt["ap_min_all"]["min"], 1, False) + "（最低）", f"{rt['turnover']['mean']:.1f}x"],
-        ["　└ 5%～95% 區間", f"{pct(rt['ret']['p5'])} ～ {pct(rt['ret']['p95'])}", f"最差 {pct(rt['mdd']['min'])}", "—", "—"],
-    ]
-    table(doc, ["樣本外", "報酬", "最大回檔", "Active Share 最低", "年換手"], rows, widths=[170, 95, 80, 75, 45])
-    v = rt["violations"]
+    st, oos, hy, tf, ba = S["strict"], S["strict_oos"], S["hysteresis"], S.get("tsmc_fixed"), S.get("base_a")
+    heading(doc, "四、代理回測摘要", 2)
+    para(doc, f"LLM 無法回測，以「候選池分數前 11 名（前 5 名高、其餘中）」代替 Agent 選股，其餘規則與實盤同一套程式。"
+              f"自 {S['first']} 起每 {S['step']} 個交易日一個起點、每段 {S['length']} 個交易日（初賽約 24 日）、從 10 億現金建倉，"
+              "計算相對「市值加權上限基準（2330 ≤ 20%、其他 ≤ 8%）」的超額報酬分布。", size=10)
+    rows = []
+    for lab, b in (("代理（嚴格前 11 名）", st), ("　其中樣本外", oos), ("遲滯代理（名次 ≤ 30 續抱）", hy),
+                   ("2330 固定高信心＋前 10 名", tf), ("對照：合規基準 A（降級保底）", ba)):
+        if not b:
+            continue
+        e = b["excess"]
+        rows.append([lab, str(e["n"]), _p(e["p_gt_5"]), _p(e["p_gt_10"]), _p(e["p_lt_m10"]), pct(e["mean"]), pct(b["mdd"]["mean"])])
+    table(doc, ["24 日窗口", "窗口數", "P(超額 > +5%)", "P(> +10%)", "P(< −10%)", "平均超額", "平均 MDD"], rows,
+          widths=[150, 45, 60, 55, 55, 50, 50])
     bullets(doc, [
-        f"隨機 tilt（每次 5 檔、±1～3%）沒有資訊含量，反映的是『Agent 判斷失誤的成本』：樣本外相對市值加權上限基準平均 {pct(rt['excess_vs_b']['mean'])}"
-        f"（5%～95%：{pct(rt['excess_vs_b']['p5'])} ～ {pct(rt['excess_vs_b']['p95'])}），最大回檔平均 {pct(rt['mdd']['mean'])}，與基準相近，損失有界。",
-        f"框架檢查：{rt['n']} 次模擬、每日期末檢查，持股檔數違規 {v['holdings']}、權重上限違規 {v['weight']}、現金比違規 {v['cash']}；"
-        f"Active Share 單日低於 20% 共 {v['ap_below_20_days']} 天、最長連續 {v['ap_max_consecutive']} 日（官方取消資格條件為連續 2 日）。",
-        f"壓力測試（tilt 每天都變，{st['n']} 次）：樣本外平均 {pct(st['ret']['mean'])}，年換手 {st['turnover']['mean']:.0f}x——tilt 頻繁變動的成本很高，"
-        "因此規則要求最短持有 5 日、無新事件不變動。",
-        "回測不證明 Agent 能創造超額報酬：真實 Agent 的 tilt 有資訊含量與否，要靠初賽期間的實際表現檢驗。樣本外僅 "
-        f"{S['oos_days']} 個交易日，統計誤差大；Active Share 以 2026-10-06 的主動型 ETF 前 10 大持股快照近似；未計股利。",
+        f"代理的 24 日超額 5%～95% 區間為 {pct(st['excess']['p5'])} ～ {pct(st['excess']['p95'])}，平均換手 {st['turnover']['mean']:.1f} 倍、"
+        f"費用與證交稅平均 {pct(st['cost']['mean'], 1, False)}：集中策略確實拉大與大盤的偏離，但左尾同樣變厚，換手成本是主要拖累。",
+        f"樣本外（窗口起點 ≥ {S['oos_start']}）只有 {oos['excess']['n']} 個彼此重疊的窗口，平均超額 {pct(oos['excess']['mean'])}；"
+        "此期間市值加權基準大漲，集中組合明顯落後，顯示策略的勝負高度依賴選股是否抓到當期主流。",
+        f"違規檢查（逐日期末）：持股檔數 {st.get('sum_v_holdings', 0)}、現金 {st.get('sum_v_cash', 0)}、Active Share < 15% 共 {st.get('sum_ap_fail_days', 0)} 天；"
+        f"單檔超過 10% 的 {st.get('sum_drift_days', 0)} 天皆為收盤價漂移，隔日減回（官方給 5 個交易日調整）。",
+        "名單偏誤：150 檔是 2026 年 7 月底依市值選出，之前的回測有前視與倖存者偏誤，動能／籌碼分數尤其容易買到事後的贏家；"
+        "主動型 ETF 持股用 2026-10-06 快照（僅前 10 大）。回測不證明 Agent 能創造超額報酬，只能檢驗規則與成本。",
     ], size=9.5)
     mapping_box(doc, [
-        "market_view.counter_evidence 與 inferences.counter_evidence：誠實寫出反方訊號；信心（confidence）不得高於證據所能支持的程度。",
-        "no_trade_decisions：沒有證據或差距在無交易帶內的持股一律寫入，並引用『基準權重未偏離無交易帶』的推論。",
+        "market_view.counter_evidence 與 inferences.counter_evidence：誠實寫出反方訊號；confidence 不得高於證據所能支持的程度。",
+        "no_trade_decisions：沒有新證據或差距在無交易帶內的持股一律寫入，並引用對應推論。",
+    ])
+
+
+def _sec_fallback(doc, decl, S):
+    fb = decl["fallback"]
+    heading(doc, "五、降級保底", 2)
+    para(doc, fb["when"], size=10)
+    para(doc, f"{fb['name']}：{fb['definition']}", size=9.5)
+    mapping_box(doc, [
+        "market_view：降級日 regime／stance 為 neutral，logic 說明降級原因與方式（凍結或合規基準 A）。",
+        "inferences／decisions：凍結時沿用原名單的推論並重新引用原證據；改用合規基準 A 時以「依合規基準 A 配置」為推論。",
     ])
 
 
 def _sec_checklist(doc, decl, S):
-    heading(doc, "四、每日 D-Plan 與本文件的對照檢查", 2)
+    heading(doc, "六、每日 D-Plan 與本文件的對照檢查", 2)
     rows = [
-        ["投資主題：市值加權核心", "market_view（basis_refs 引用 " + "、".join(t for t, _ in MARKET_TOPICS) + "）；inferences（再平衡／未偏離無交易帶）；decisions.target_weight", "assemble.build_doc"],
-        ["投資理念：依公開資訊小幅加減碼", "observations.topic ∈ 五種 tilt 依據；inferences 引用該 observation；decisions 引用 inference", "assemble.check_proposal"],
-        ["每筆 tilt 須有具名來源", "sources.authority 與 content_as_of；observations.source_ref；dplan_validate C1（引用鏈不可斷）", "validate()"],
-        ["單檔 ±3%、總偏離 ≤ 15%、最短持有 5 日", "decisions.target_weight 與基準的差；沿用的 tilt 以『沿用…』推論重新引用原事件", "final.apply_tilts／tilt_state"],
-        ["Active Share ≥ 27%（官方 20%）", "target_weight 已通過 Active Share 檢查才進入 decisions（不單獨列欄位）", "final.ensure_active_share"],
+        ["投資主題：集中持有 10–12 檔高信心股", "decisions.target_weight（高 9%／中 6%）；inferences 每檔一則", "conviction.build_portfolio"],
+        ["投資理念：依公開事件選股", "observations.topic ∈ 五種依據；inferences 引用該 observation；decisions 引用 inference", "conviction_agent.check_picks"],
+        ["每檔須有具名來源", "sources.authority 與 content_as_of；observations.source_ref；dplan_validate C1（引用鏈不可斷）", "validate()"],
+        ["持有 3 日、每日換 4 檔、停損 12%、事件前一日", "position_pnl／event_calendar observation；SELL_ALL 與 BUY 的時點", "conviction.discipline"],
+        ["Active Share ≥ 20%（官方 15%）", "target_weight 已通過 Active Share 檢查才進入 decisions", "conviction.build_portfolio"],
         ["現金與曝險承諾", "market_view.posture 由實際委託推得；dplan_validate C12", "plan.posture_for／validate()"],
         ["紀律：無證據不動", "no_trade_decisions 涵蓋所有未異動持股", "dplan_validate 覆蓋檢查"],
     ]
@@ -290,10 +309,11 @@ def build_strategy_doc(out: Path | None = None, *, decl: dict | None = None, sum
     _fill_form(doc, decl)
     if not form_only:
         S = summary or load_summary()
-        _sec_core(doc, decl, S)
-        _sec_alpha(doc, decl, S)
-        _sec_factors(doc, decl, S)
+        _sec_structure(doc, decl, S)
+        _sec_selection(doc, decl, S)
+        _sec_discipline(doc, decl, S)
         _sec_backtest(doc, decl, S)
+        _sec_fallback(doc, decl, S)
         _sec_checklist(doc, decl, S)
     p = out or OUTPUT_PATH
     p.parent.mkdir(parents=True, exist_ok=True)

@@ -3,8 +3,8 @@
 
   python scripts/make_strategy_doc.py              # 官方表單 + 補充說明
   python scripts/make_strategy_doc.py --form-only  # 只有官方三欄表單
-名稱、主題、理念讀 config/strategy_declaration.json（須符合官方格式限制）；回測數字讀 docs/final_strategy_backtest.json
-（由 scripts/run_final_backtest.py 產生）。
+名稱、主題、理念讀 config/strategy_declaration.json（須符合官方格式限制）；回測數字讀 docs/conviction_backtest.json
+（由 scripts/run_conviction_backtest.py 產生）。
 """
 import argparse
 import sys

@@ -1,0 +1,30 @@
+{
+ "note": "高波動事件（美國日期）。事件當天的台股交易日（若事件日非交易日則為其前一個交易日）＝「前一交易日」，該日不新增部位、不升級。FOMC 取會議第二天（決議公布日）；NVIDIA 取財報公布日（美股盤後）。estimated=true 者為依往年慣例推估，公司正式公告後請更新（更新本檔＝改版）。",
+ "events": [
+  {"date": "2025-01-29", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2025-02-26", "kind": "nvidia_earnings", "name": "NVIDIA FY2025 Q4 財報"},
+  {"date": "2025-03-19", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2025-05-07", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2025-05-28", "kind": "nvidia_earnings", "name": "NVIDIA FY2026 Q1 財報"},
+  {"date": "2025-06-18", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2025-07-30", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2025-08-27", "kind": "nvidia_earnings", "name": "NVIDIA FY2026 Q2 財報"},
+  {"date": "2025-09-17", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2025-10-29", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2025-11-19", "kind": "nvidia_earnings", "name": "NVIDIA FY2026 Q3 財報"},
+  {"date": "2025-12-10", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2026-01-28", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2026-02-25", "kind": "nvidia_earnings", "name": "NVIDIA FY2026 Q4 財報"},
+  {"date": "2026-03-18", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2026-04-29", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2026-05-20", "kind": "nvidia_earnings", "name": "NVIDIA FY2027 Q1 財報", "estimated": true},
+  {"date": "2026-06-17", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2026-07-29", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2026-08-26", "kind": "nvidia_earnings", "name": "NVIDIA FY2027 Q2 財報", "estimated": true},
+  {"date": "2026-09-16", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2026-10-28", "kind": "fomc", "name": "FOMC 利率決議"},
+  {"date": "2026-11-03", "kind": "us_election", "name": "美國期中選舉"},
+  {"date": "2026-11-18", "kind": "nvidia_earnings", "name": "NVIDIA FY2027 Q3 財報", "estimated": true},
+  {"date": "2026-12-09", "kind": "fomc", "name": "FOMC 利率決議"}
+ ]
+}

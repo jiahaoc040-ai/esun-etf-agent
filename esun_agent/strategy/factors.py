@@ -5,6 +5,8 @@
   foreign20/trust20  近 20 日外資／投信買賣超股數 ÷ 同期成交股數（法人淨買比，無單位）
   valchg             log(近 5 日均成交值 ÷ 近 20 日均成交值)
   inst10             近 10 日投信淨買超金額（Σ 淨買股數×均價）÷ 近 10 日成交值（成交值標準化）
+  inst5              同上，近 5 日
+  rs20               20 日相對強度：mom20 − 當日 150 檔 mom20 中位數
   mom20s5            20 日動能並略過最近 5 日：adj[t−5] / adj[t−25] − 1
   adv20              近 20 日均成交值（不是因子，供流動性門檻用）
 
@@ -39,6 +41,10 @@ def compute_factors(panel: Panel, ffill_limit: int = 10) -> dict[str, pd.DataFra
     f["valchg"] = np.log(v5.replace(0, np.nan) / v20.replace(0, np.nan))
     val10 = val.rolling(10, min_periods=5).sum().replace(0, np.nan)
     f["inst10"] = (panel.trust_net * panel.avg_price.fillna(0.0)).rolling(10, min_periods=5).sum() / val10
+    val5 = val.rolling(5, min_periods=3).sum().replace(0, np.nan)
+    f["inst5"] = (panel.trust_net * panel.avg_price.fillna(0.0)).rolling(5, min_periods=3).sum() / val5
+    m20 = f["mom20"].where(panel.close.notna())
+    f["rs20"] = m20.sub(m20.median(axis=1), axis=0)
     f["mom20s5"] = px.shift(5) / px.shift(25) - 1
     f["adv20"] = v20
     # 沒有當日收盤價（未上市、當日無成交）的股票不產生任何因子

@@ -17,6 +17,8 @@ from ..config import CASH_BUFFER_HIGH, CASH_BUFFER_LOW, HOLD_TOLERANCE
 from ..orders import derive_orders, estimate_flows, target_shares
 
 MIN_CASH_AFTER = 0.02
+MAX_DECISIONS = 30                # schema：decisions、orders 各最多 30 筆
+BUY_BUFFER = 0.03                 # 集中策略：每買進 NAV 的 10%，委託後現金比多留 0.3%（均價可能高於前日收盤）
 
 
 @dataclass
@@ -57,14 +59,47 @@ def _build(target: dict[str, float], nav: float, close: dict[str, float], holdin
     return decisions, no_trade
 
 
+def limit_decisions(target: dict[str, float], nav: float, close: dict[str, float], holdings: dict[str, int],
+                    max_n: int = MAX_DECISIONS) -> tuple[dict[str, float], list[str]]:
+    """一天的異動超過 max_n 檔（例如合規基準 A ↔ 集中組合的整體轉換）時，把最不重要的異動延到隔天：
+    先讓續抱者的小幅加減碼維持現權重（差距最小者優先），再延後權重最小的新建倉，最後延後出清（維持現權重）。"""
+    cur = {t: n * close[t] / nav for t, n in holdings.items() if t in close}
+    t = dict(target)
+    notes: list[str] = []
+    for _ in range(200):
+        decs, _ = _build(t, nav, close, holdings)
+        if len(decs) <= max_n:
+            break
+        cont = sorted((d for d in decs if d["action"] in ("ADD", "TRIM")),
+                      key=lambda d: (abs(d["target_weight"] - cur.get(d["ticker"], 0.0)), d["ticker"]))
+        buys = sorted((d for d in decs if d["action"] == "BUY"), key=lambda d: (d["target_weight"], d["ticker"]))
+        sells = sorted((d for d in decs if d["action"] == "SELL_ALL"), key=lambda d: (cur.get(d["ticker"], 0.0), d["ticker"]))
+        if cont:
+            x = cont[0]["ticker"]
+            t[x] = cur[x]
+        elif buys:
+            x = buys[0]["ticker"]
+            t.pop(x)
+        else:
+            x = sells[0]["ticker"]
+            t[x] = cur[x]
+        notes.append(f"deferred:{x}")
+    if notes:
+        notes = [f"decisions_limited:{len(notes)} 檔延到隔日（單日最多 {max_n} 筆）"] + notes
+    return t, notes
+
+
 def _orders(decisions: list[dict], nav, close, holdings):
     ds = [{**d, "decision_id": f"D{i}"} for i, d in enumerate(decisions, 1)]
     return derive_orders(ds, nav, close, holdings)
 
 
 def plan_orders(target: dict[str, float], nav: float, cash: float, close: dict[str, float],
-                holdings: dict[str, int], min_cash_after: float = MIN_CASH_AFTER) -> Plan:
-    """target = 目標權重（占 NAV）。回傳 Plan（decisions 尚未編號）。"""
+                holdings: dict[str, int], min_cash_after: float = MIN_CASH_AFTER, buy_buffer: float = 0.0) -> Plan:
+    """target = 目標權重（占 NAV）。回傳 Plan（decisions 尚未編號）。異動超過 30 檔時先以 limit_decisions 延後一部分。
+    委託後估算現金比需 ≥ min_cash_after + buy_buffer × 買進金額／NAV（買進用 T 日均價成交，可能比前日收盤貴；
+    換股多的日子買得多，緩衝也要大）。"""
+    target, lim_notes = limit_decisions(target, nav, close, holdings)
     cur = {t: n * close[t] / nav for t, n in holdings.items() if t in close}
 
     def scaled(k: float) -> dict[str, float]:
@@ -81,17 +116,23 @@ def plan_orders(target: dict[str, float], nav: float, cash: float, close: dict[s
         buy, sell = estimate_flows([o.to_dict() for o in ords], close)
         return decs, nt, ords, buy, sell, cash - (buy - sell)
 
-    decs, nt, ords, buy, sell, cash_after = attempt(1.0)
+    def ok(r) -> bool:
+        return r[5] / nav >= min_cash_after + buy_buffer * r[3] / nav
+
+    first = attempt(1.0)
+    decs, nt, ords, buy, sell, cash_after = first
     plan = Plan(decs, nt, ords, cash_after, buy, sell, 1.0)
-    if cash_after / nav >= min_cash_after:
+    plan.notes = list(lim_notes)
+    if ok(first):
         return plan
+    floor = min_cash_after + buy_buffer * buy / nav
     lo, hi = 0.0, 1.0
     best = attempt(0.0)
-    if best[5] / nav >= min_cash_after:
+    if ok(best):
         for _ in range(30):
             mid = (lo + hi) / 2
             r = attempt(mid)
-            if r[5] / nav >= min_cash_after:
+            if ok(r):
                 lo, best = mid, r
             else:
                 hi = mid
@@ -99,8 +140,8 @@ def plan_orders(target: dict[str, float], nav: float, cash: float, close: dict[s
     else:
         k = 0.0                         # 即使完全不買也低於 2%（現金本來就低）：不買，其餘照舊
     decs, nt, ords, buy, sell, cash_after = best
-    return Plan(decs, nt, ords, cash_after, buy, sell, k,
-                [f"buys_scaled:{k:.3f}（委託後現金比原為 {(cash - (plan.buy - plan.sell)) / nav:.2%} < {min_cash_after:.0%}）"])
+    return Plan(decs, nt, ords, cash_after, buy, sell, k, lim_notes +
+                [f"buys_scaled:{k:.3f}（委託後現金比原為 {(cash - (plan.buy - plan.sell)) / nav:.2%} < {floor:.2%}）"])
 
 
 def posture_for(plan: Plan, nav: float) -> dict:

@@ -1,4 +1,6 @@
-"""D-Plan 組裝器：base_weights → LLM tilts → apply_tilts(strict) → derive_orders → validate()。
+"""舊版 D-Plan 組裝器（v1：合規基準 A ＋ LLM tilt）：base_weights → LLM tilts → apply_tilts(strict) → derive_orders → validate()。
+正式流程已改為 conviction_agent.assemble_conviction_day（集中主題＋事件驅動）；本模組保留作為舊策略與共用工具
+（DayContext、build_doc、code_version、write 檢查），合規基準 A 的降級保底由 conviction_agent 直接呼叫 FinalStrategy。
 
 流程（assemble_day）：
   1. 基準：base_plan（A 的權重，Active Share 補到 27%）。
@@ -22,7 +24,7 @@ from pathlib import Path
 
 from ..config import ROOT
 from ..dplan_validate import Report, validate
-from ..strategy.declaration import load_declaration
+from ..strategy.declaration import allowed_bases, load_declaration
 from ..strategy.factors import factors_on
 from ..strategy.final import FinalStrategy, TiltError, apply_tilts, base_plan, validate_tilts
 from ..universe import load_universe
@@ -44,8 +46,8 @@ class AssembleError(RuntimeError):
 
 def prompt_version() -> str:
     h = hashlib.sha256()
-    for name in ("system.md", "user.md"):
-        h.update((PROMPT_DIR / name).read_bytes())
+    for path in sorted(PROMPT_DIR.glob("*.md")):                 # 全部模板（含 conviction_*.md）：改任何一個＝改版
+        h.update(path.name.encode() + path.read_bytes())
     return h.hexdigest()[:8]
 
 
@@ -125,12 +127,11 @@ def write_dplan(result: AssembleResult, outdir: Path, state_path: Path | None = 
 # ----------------------------------------------------------------------------- prompt
 
 def _declaration_summary(decl: dict) -> str:
-    lim = decl["tilt"]["limits"]
-    d = {"etf": decl["etf"]["name"], "theme": decl["theme"]["summary"], "philosophy": decl["philosophy"],
-         "benchmark": decl["benchmark"]["definition"], "tilt_limits": lim,
-         "allowed_bases": [{"id": b["id"], "label": b["label"], "authority": b["authority"]}
-                           for b in decl["tilt"]["allowed_bases"]],
-         "requirements": decl["tilt"]["requirements"]}
+    """舊版（合規基準 A ＋ tilt）的宣告節錄：v2 宣告中屬於 fallback 區塊。"""
+    fb = decl["fallback"]
+    d = {"etf": decl["etf"]["name"], "fallback": fb["name"], "benchmark": fb["definition"], "tilt_limits": fb["tilt_limits"],
+         "allowed_bases": [{"id": b["id"], "label": b["label"], "authority": b["authority"]} for b in allowed_bases(decl)],
+         "requirements": decl["selection"]["requirements"]}
     return json.dumps(d, ensure_ascii=False, indent=1)
 
 
@@ -144,7 +145,7 @@ def build_prompts(ctx: DayContext, decl: dict, ev, base: dict, state_tilts: dict
                   feedback: list[str]) -> tuple[str, str]:
     p = ctx.strategy.params
     bases = "\n".join(f"- {b['id']}（{b['label']}）：來源 authority 須為 {'／'.join(b['authority'])}"
-                      for b in decl["tilt"]["allowed_bases"])
+                      for b in allowed_bases(decl))
     system = _render((PROMPT_DIR / "system.md").read_text(encoding="utf-8"), etf_name=decl["etf"]["name"],
                      allowed_bases=bases, max_delta=f"{p.max_delta:.0%}", max_active=f"{p.max_active:.0%}",
                      min_hold_days=5)
@@ -194,7 +195,7 @@ def check_proposal(prop: Proposal, ctx: DayContext, ev, carried: dict[str, Activ
         if r not in ids:
             errs.append(f"market_view.basis_refs 引用不存在的 {r}")
     cutoff = f"{ctx.prev_date}T{EVIDENCE_CUTOFF_TIME}"
-    allowed = {b["id"]: set(b["authority"]) for b in decl["tilt"]["allowed_bases"]}
+    allowed = {b["id"]: set(b["authority"]) for b in allowed_bases(decl)}
     uni = load_universe()
     for c in prop.tilts:
         w = f"tilt {c.ticker}"

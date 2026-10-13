@@ -1,70 +1,84 @@
 {
- "version": "1.0.0",
+ "version": "2.0.0",
  "status": "final",
- "status_note": "宣告已定案。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules 與 esun_agent/strategy/final.py 的 FinalParams 必須一致（有測試）。",
+ "status_note": "策略改版（v2.0.0）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
  "etf": {
   "name": "主動台灣核心優選 AI",
   "name_status": "final",
   "market": "台股（上市＋上櫃，限 universe_150）",
-  "style": "大型權值核心＋AI Agent 事件加減碼"
+  "style": "集中主題＋事件驅動：10–12 檔高信心部位＋市值前 30 大湊檔數部位"
  },
  "theme": {
-  "title": "市值加權核心，由 AI Agent 依公開資訊做小幅加減碼",
-  "summary": "以台股 150 檔投資範圍內市值最大的 28 檔為核心（市值加權、設單檔上限），貼近大盤權值股的風險報酬；再由 AI Agent 每日閱讀財報、法說會、月營收、投信買賣超與重大訊息，對少數個股做有限度的加碼或減碼。"
+  "title": "AI Agent 依公開事件集中持有 10 至 12 檔高信心台股，追求明顯偏離大盤的超額報酬",
+  "summary": "每日由程式從 150 檔篩出約 30 檔候選（投信 5／10 日淨買超、20 日相對強度、成交值放大，並對主動型 ETF 重疊扣分），AI Agent 閱讀月營收、財報、法說會、投信連買與重大訊息後挑出 10–12 檔高信心股票並給信心等級，程式換算為 9%／6% 的集中部位；其餘以市值前 30 大小額湊足持股檔數。"
  },
  "philosophy": [
-  "核心部位追求貼近市值加權基準，避免過度集中與追高；超額報酬主要來自有證據的小幅調整，而非押注單一主題。",
-  "Agent 的每一次加減碼都必須能追溯到一則具名的公開資訊（來源、發布時間、數字），並說明該資訊為何支持加碼或減碼。",
-  "主動偏離有明確上限（單檔 ±3%、總偏離 15%），確保即使 Agent 判斷失誤，損失也有界；沒有足夠證據時維持基準權重（no_trade）。",
-  "與市面上主動型 ETF 的前 10 大持股保持足夠差異（Active Share 目標 ≥ 27%，官方門檻 20%），避免複製既有產品。"
+  "超額報酬來自集中：只有 10–12 檔高信心部位，每檔 6%–9%，刻意與市值加權大盤拉開距離；不追求貼近指數。",
+  "每一檔高信心部位都必須引用至少一則具名公開資訊（月營收、財報、法說會、投信連續買超、重大訊息），並說明為何是高或中信心；候選分數只負責排序，不是買進理由。",
+  "Agent 只決定「哪幾檔、信心高或中」，權重由程式依信心等級換算、股數由官方公式推導，所有風控（單檔上限、持股檔數、現金、Active Share）由程式檢查。",
+  "紀律化換股：持有至少 3 個交易日、每日最多換 4 檔、成本下跌超過 12% 且無新正面事件即出場、美國高波動事件前一交易日不新增部位。",
+  "與主動型 ETF 前 15 大持股保持差異：候選分數對重疊扣分，Active Share 內部目標 ≥ 20%（官方門檻 15%）。"
  ],
+ "philosophy_statement": "本 ETF 由 AI Agent 依公開事件集中投資台股。程式每日以投信買超、相對強度與成交值放大篩出約 30 檔候選，並對主動型 ETF 重押的股票扣分；Agent 閱讀月營收、財報、法說會、投信連買與重大訊息，挑出 10 至 12 檔高信心股票，高信心配置 9%、中信心 6%，其餘以大型權值股小額湊足持股。每檔都須引用具名資訊；持有至少 3 日、每日最多換 4 檔、跌逾 12% 無新利多即停損，重大美國事件前一日不加碼，以紀律追求明顯偏離大盤的超額報酬。",
  "benchmark": {
-  "name": "合規基準 A",
-  "definition": "投資範圍內『有當日價格且 20 日均成交值 ≥ 2 億』的股票，以市值（還原收盤價 × 發行股數）加權，2330 權重上限 20%、其他個股上限 8%（超額按市值比例重分配）；取權重最大的前 28 檔重新歸一；現金 3%；再以最小調整法（只動 1–3 檔重疊最大的標的，減下的權重分給第 11–28 名）把 Active Share 補到 ≥ 27%。",
-  "reference_benchmarks": {
-   "a": "150 檔等權（每日再平衡）",
-   "b": "市值加權上限：2330 ≤ 20%、其他 ≤ 8%（150 檔全體）"
-  },
-  "code": "esun_agent.strategy.final.FinalStrategy.base_weights"
+  "name": "市值加權上限基準 (b)",
+  "definition": "投資範圍 150 檔中前一日有市值者，以市值（還原收盤價 × 發行股數）加權，2330 ≤ 20%、其他個股 ≤ 8%（超額按市值比例重分配），每日再平衡、不計成本。用於衡量集中策略的超額報酬；本 ETF 不追蹤此基準。",
+  "code": "esun_agent.backtest.cap_weight_benchmark"
  },
  "portfolio_rules": {
-  "n_base": 28,
+  "n_conv_min": 10,
+  "n_conv_max": 12,
+  "w_high": 0.09,
+  "w_mid": 0.06,
+  "w_tsmc_high": 0.15,
+  "w_tsmc_mid": 0.1,
+  "cap_other": 0.09,
+  "cap_tsmc": 0.2,
+  "conv_floor": 0.03,
+  "filler_pool": 30,
+  "filler_min": 0.01,
+  "filler_max": 0.02,
+  "n_total_min": 21,
+  "n_total_max": 24,
+  "cash_low": 0.02,
   "cash_target": 0.03,
-  "cash_low": 0.01,
-  "cash_high": 0.22,
-  "base_cap_tsmc": 0.2,
-  "base_cap_other": 0.08,
-  "tilt_cap_tsmc": 0.22,
-  "tilt_cap_other": 0.085,
-  "max_delta": 0.03,
-  "max_active": 0.15,
-  "min_hold": 20,
-  "max_hold": 29,
-  "ap_target": 0.27,
-  "band": 0.02,
-  "rebalance_every": 5,
-  "min_adv": 200000000.0,
-  "guard_tsmc": 0.24,
-  "guard_other": 0.09,
-  "ap_trigger": 0.22,
-  "ap_recovery_target": 0.34
+  "cash_high": 0.05,
+  "ap_target": 0.2,
+  "ap_trigger": 0.17,
+  "ap_recovery_target": 0.25,
+  "min_hold_days": 3,
+  "max_swaps": 4,
+  "stop_loss": 0.12,
+  "band": 0.015,
+  "guard_other": 0.095,
+  "guard_tsmc": 0.22,
+  "min_adv": 300000000.0
+ },
+ "candidate_rules": {
+  "n_candidates": 30,
+  "min_adv": 300000000.0,
+  "w_trust5": 0.2,
+  "w_trust10": 0.2,
+  "w_rs20": 0.3,
+  "w_valchg": 0.15,
+  "overlap_penalty": 1.0,
+  "always_include": [
+   "2330"
+  ]
  },
  "rebalance_policy": {
-  "schedule": "每 5 個交易日再平衡一次；無交易帶 2%（既有持股目標與現權重差 < 2% 不交易）",
+  "schedule": "每個交易日依當日高信心名單重新計算目標權重；既有持股目標與現權重差 < 1.5%（無交易帶）不交易，新增與移出一律交易",
   "extra_trading_days": [
-   "Agent 的 tilt 與前一日不同",
-   "漂移保護觸發（前日收盤權重逼近官方上限：2330 > 24%、其他 > 9%）"
+   "漂移保護：前日收盤權重 > 9.5%（2330 > 22%）當日減回配置權重",
+   "Active Share 前日收盤 < 17% → 當日強制再平衡到 ≥ 20%；前日已 < 15% → 補到 ≥ 25%"
   ],
-  "orders": "一律由 esun_agent.orders.derive_orders 依目標權重機械產生，Agent 不寫股數",
-  "active_share_hard_rule": "前日收盤 Active Share < 22% → 當日必須再平衡到 ≥ 27%，不受無交易帶與 5 日週期限制；若前日收盤已經 < 20%（昨天違規），今天補到 ≥ 34%，避免連 2 日低於 20%（官方門檻 20%，連 2 日低於取消資格）"
+  "orders": "一律由 esun_agent.orders.derive_orders 依目標權重機械產生，Agent 不寫股數；委託後估算現金比 ≥ 2% ＋ 0.05 × 買進金額占 NAV，不足時等比例縮減買進"
  },
- "tilt": {
-  "format": "{ticker: delta}，delta 為占 NAV 的權重變動（+0.02 = 加碼 2% NAV）",
-  "limits": {
-   "per_name_abs_delta": 0.03,
-   "total_active": "Σ|delta| / 2 ≤ 0.15",
-   "universe": "僅限 universe_150；可加入不在基準前 28 名的股票，持股維持 20–30 檔（內部上限 29 檔，保留 1 檔給停牌而賣不掉的部位）",
-   "no_short": "不可對基準未持有的股票減碼"
+ "selection": {
+  "format": "picks：[{ticker, conviction: high|medium, basis, obs_ids, logic, counter_evidence, confidence}]，每天列出完整 10–12 檔；exits：[{ticker, obs_ids, logic}] 主動移出者的理由",
+  "conviction_levels": {
+   "high": "高信心：配置 9%（2330 為 15%）",
+   "medium": "中信心：配置 6%（2330 為 10%）"
   },
   "allowed_bases": [
    {
@@ -129,22 +143,67 @@
    }
   ],
   "requirements": [
-   "每一筆 tilt 必須對應至少一個 observation，其 source.authority 屬於該依據允許的來源，且 content_as_of 不晚於決策日前一個交易日收盤",
-   "inference 必須標明使用的 tilt 依據 id（allowed_bases[].id），並說明方向（加碼／減碼）與幅度的理由",
-   "不得以股價走勢、市場傳聞或沒有來源的敘述作為 tilt 依據；技術面與投信以外的籌碼資料不在許可範圍",
-   "沒有足夠證據時不做 tilt，該股維持基準權重（decision 為 no_trade）"
+   "每一檔 picks 必須引用至少一則 observation，其 ticker 為該股、topic 為所宣告的依據 id、source.authority 屬於該依據允許的來源，且 content_as_of 不晚於決策日 19:30",
+   "只能從當日候選池（約 30 檔）或目前的高信心名單中挑選；2330 一律列入候選表",
+   "候選分數（candidate_screen）含股價相對強度，只能作為排序參考與輔助引用，不能單獨作為入選依據",
+   "停損股票若要保留，必須引用今日新出現的正面事件（財報、法說會、月營收、重大訊息）",
+   "Agent 不得輸出權重、股數、委託或 posture；輸出不合格會被退回重寫，最多 3 次"
   ],
   "forbidden_bases": [
-   "股價漲跌或技術指標",
+   "股價漲跌或技術指標（只能作為候選排序）",
    "社群或論壇傳聞",
    "沒有具名來源的消息",
    "未來才會發生的事件當成已發生"
   ]
  },
- "references": {
-  "strategy_code": "esun_agent/strategy/final.py",
-  "backtest_report": "docs/final_strategy_backtest.md",
-  "agent_metadata_note": "agent_metadata.code_version 使用 git:<short sha>；本檔任何欄位變動都視為改版"
+ "discipline": {
+  "min_hold_days": "高信心部位持有 ≥ 3 個交易日才可賣出或降級（觸發停損除外）",
+  "max_swaps": "每日最多新增 4 檔、主動移出 4 檔（首次建倉不受限；停損出場不計入）",
+  "stop_loss": "還原價相對成本（進場日成交均價）下跌超過 12%，且當日沒有新的正面事件 → 出場",
+  "event_blackout": "FOMC 利率決議、NVIDIA 財報、美國大選（config/event_calendar.json）的前一交易日：不新增部位、不升級，既有部位凍結（停損與漂移保護照常）",
+  "state": "runs/state/conviction.json"
  },
- "philosophy_statement": "本 ETF 以台股 150 檔投資範圍內市值最大的 28 檔為市值加權核心（2330 ≤ 20%、個股 ≤ 8%），貼近大盤風險報酬並控管集中度；AI Agent 每日閱讀財報、法說會、月營收、投信連續買賣超與重大訊息，對個股做單檔 ±3%、總偏離 ≤ 15% 的小幅加減碼，每筆都須引用具名公開資訊，tilt 最短持有 5 個交易日，沒有證據就維持基準。同時與主動型 ETF 前十大持股保持 Active Share ≥ 27%，追求低回檔與紀律化的超額報酬。"
+ "fallback": {
+  "name": "合規基準 A",
+  "when": "Agent 連續 3 次輸出未通過檢查時：若已有高信心名單 → 凍結（沿用現有部位，只做停損與漂移保護）；若尚無名單或凍結也不合規 → 改用合規基準 A（舊版正式策略，零 tilt）",
+  "definition": "投資範圍內『有當日價格且 20 日均成交值 ≥ 2 億』的股票，以市值（還原收盤價 × 發行股數）加權，2330 權重上限 20%、其他個股上限 8%（超額按市值比例重分配）；取權重最大的前 28 檔重新歸一；現金 3%；再以最小調整法（只動 1–3 檔重疊最大的標的，減下的權重分給第 11–28 名）把 Active Share 補到 ≥ 27%。",
+  "code": "esun_agent.strategy.final.FinalStrategy.decide",
+  "portfolio_rules": {
+   "n_base": 28,
+   "cash_target": 0.03,
+   "cash_low": 0.01,
+   "cash_high": 0.22,
+   "base_cap_tsmc": 0.2,
+   "base_cap_other": 0.08,
+   "tilt_cap_tsmc": 0.22,
+   "tilt_cap_other": 0.085,
+   "max_delta": 0.03,
+   "max_active": 0.15,
+   "min_hold": 20,
+   "max_hold": 29,
+   "ap_target": 0.27,
+   "band": 0.02,
+   "rebalance_every": 5,
+   "min_adv": 200000000.0,
+   "guard_tsmc": 0.24,
+   "guard_other": 0.09,
+   "ap_trigger": 0.22,
+   "ap_recovery_target": 0.34
+  },
+  "tilt_limits": {
+   "per_name_abs_delta": 0.03,
+   "total_active": "Σ|delta| / 2 ≤ 0.15",
+   "universe": "僅限 universe_150；可加入不在基準前 28 名的股票，持股維持 20–30 檔（內部上限 29 檔，保留 1 檔給停牌而賣不掉的部位）",
+   "no_short": "不可對基準未持有的股票減碼"
+  }
+ },
+ "references": {
+  "strategy_code": "esun_agent/strategy/conviction.py",
+  "candidate_code": "esun_agent/strategy/candidates.py",
+  "agent_code": "esun_agent/agent/conviction_agent.py",
+  "event_calendar": "config/event_calendar.json",
+  "backtest_report": "docs/conviction_backtest.md",
+  "fallback_backtest_report": "docs/final_strategy_backtest.md",
+  "agent_metadata_note": "agent_metadata.code_version 使用 git:<short sha>；本檔任何欄位變動都視為改版"
+ }
 }

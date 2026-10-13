@@ -1,6 +1,8 @@
 """LLM 供應商（可切換）與輸出解析。
 
-LLM 只輸出兩件事（JSON）：
+集中策略（正式版，parse_picks）LLM 輸出 market_view、picks（10–12 檔高信心名單：ticker、conviction=high|medium、basis、
+obs_ids、logic…）與 exits（主動移出者的理由）；權重由程式依信心等級換算（高 9%、中 6%）。
+舊版（降級保底沿用的合規基準 A ＋ tilt，parse_proposal）LLM 只輸出兩件事（JSON）：
   (a) market_view：regime、stance、logic、basis_refs（市場級 obs_id）、counter_evidence、confidence
   (b) tilts：對個股的加減碼變更 [{ticker, delta, basis, event_direction, obs_ids, logic, counter_evidence, confidence}]
       delta 是這檔 tilt 的「新總量」（占 NAV，+0.02 = 加碼 2%）；0 = 撤銷；沒提到的檔沿用現有 tilt。
@@ -239,3 +241,141 @@ def parse_proposal(text: str) -> tuple[Proposal | None, list[str]]:
         return None, errs
     return Proposal(MarketViewIn(mv["regime"], mv["stance"], mv["logic"], mv["basis_refs"], mv.get("counter_evidence"),
                                  mv.get("confidence")), tilts), []
+
+
+# ----------------------------------------------------------------------------- 集中策略：高信心名單
+
+CONVICTIONS = {"high", "medium"}
+OBS_RE = re.compile(r"O\d{1,3}")
+
+
+@dataclass
+class PickIn:
+    ticker: str
+    conviction: str
+    basis: str
+    obs_ids: list[str]
+    logic: str
+    counter_evidence: str | None
+    confidence: float | None = None
+
+
+@dataclass
+class ExitIn:
+    ticker: str
+    obs_ids: list[str]
+    logic: str
+
+
+@dataclass
+class PicksProposal:
+    market_view: MarketViewIn
+    picks: list[PickIn] = field(default_factory=list)
+    exits: list[ExitIn] = field(default_factory=list)
+
+    def levels(self) -> list[tuple[str, str]]:
+        return [(p.ticker, p.conviction) for p in self.picks]
+
+
+def _market_view(mv, errs: list[str]) -> MarketViewIn | None:
+    if not isinstance(mv, dict):
+        errs.append("缺少 market_view 物件")
+        return None
+    bad = set(mv) - {"regime", "stance", "logic", "basis_refs", "counter_evidence", "confidence"}
+    if bad:
+        errs.append(f"market_view 多出欄位 {sorted(bad)}")
+    if mv.get("regime") not in REGIMES:
+        errs.append(f"market_view.regime 需為 {sorted(REGIMES)}")
+    if mv.get("stance") not in STANCES:
+        errs.append(f"market_view.stance 需為 {sorted(STANCES)}")
+    if not isinstance(mv.get("logic"), str) or not 20 <= len(mv["logic"]) <= 1000:
+        errs.append("market_view.logic 需為 20–1000 字的字串")
+    refs = mv.get("basis_refs")
+    if not (isinstance(refs, list) and 1 <= len(refs) <= 10 and all(isinstance(r, str) and OBS_RE.fullmatch(r) for r in refs)):
+        errs.append("market_view.basis_refs 需為 1–10 個 obs_id（例如 [\"O1\",\"O3\"]）")
+    ce = mv.get("counter_evidence")
+    if ce is not None and not (isinstance(ce, str) and len(ce) <= 500):
+        errs.append("market_view.counter_evidence 需為 ≤500 字的字串或 null")
+    conf = mv.get("confidence")
+    if conf is not None and not (isinstance(conf, (int, float)) and not isinstance(conf, bool) and 0 <= conf <= 1):
+        errs.append("market_view.confidence 需在 0–1")
+    return MarketViewIn(mv.get("regime"), mv.get("stance"), mv.get("logic"), refs if isinstance(refs, list) else [],
+                        ce, conf)
+
+
+def _obs_list(x) -> bool:
+    return isinstance(x, list) and 1 <= len(x) <= 10 and all(isinstance(r, str) and OBS_RE.fullmatch(r) for r in x)
+
+
+def parse_picks(text: str) -> tuple[PicksProposal | None, list[str]]:
+    """解析集中策略的 LLM 輸出（結構與型別）。名單規則（檔數、持有天數、換股上限、停損、事件前一日）與引用檢查在 assemble 做。"""
+    try:
+        d = extract_json(text)
+    except (json.JSONDecodeError, ValueError):
+        return None, ["輸出不是合法 JSON，請只輸出一個 JSON 物件"]
+    if not isinstance(d, dict):
+        return None, ["輸出頂層必須是 JSON 物件"]
+    errs = [f"不得輸出 {p}：權重、股數、委託與 posture 由程式決定" for p in _forbidden(d)]
+    extra = set(d) - {"market_view", "picks", "exits"}
+    if extra:
+        errs.append(f"頂層只允許 market_view、picks、exits，多出 {sorted(extra)}")
+    mv = _market_view(d.get("market_view"), errs)
+    picks_in, exits_in = d.get("picks"), d.get("exits", [])
+    if not isinstance(picks_in, list):
+        return None, errs + ["picks 必須是陣列（10–12 檔高信心名單）"]
+    if not isinstance(exits_in, list):
+        return None, errs + ["exits 必須是陣列（沒有主動移出就給 []）"]
+    picks, seen = [], set()
+    for i, t in enumerate(picks_in):
+        w = f"picks[{i}]"
+        if not isinstance(t, dict):
+            errs.append(f"{w} 必須是物件")
+            continue
+        bad = set(t) - {"ticker", "conviction", "basis", "obs_ids", "logic", "counter_evidence", "confidence"}
+        if bad:
+            errs.append(f"{w} 多出欄位 {sorted(bad)}")
+        tk = t.get("ticker")
+        if not (isinstance(tk, str) and re.fullmatch(r"\d{4}", tk)):
+            errs.append(f"{w}.ticker 需為 4 位數字字串")
+        elif tk in seen:
+            errs.append(f"{w}.ticker {tk} 重複")
+        seen.add(tk)
+        if t.get("conviction") not in CONVICTIONS:
+            errs.append(f"{w}.conviction 需為 high（高）或 medium（中）")
+        if t.get("basis") not in BASES:
+            errs.append(f"{w}.basis 需為 {sorted(BASES)}")
+        if not _obs_list(t.get("obs_ids")):
+            errs.append(f"{w}.obs_ids 需為 1–10 個 obs_id")
+        if not isinstance(t.get("logic"), str) or not 20 <= len(t["logic"]) <= 1000:
+            errs.append(f"{w}.logic 需為 20–1000 字的字串")
+        ce = t.get("counter_evidence")
+        if ce is not None and not (isinstance(ce, str) and len(ce) <= 500):
+            errs.append(f"{w}.counter_evidence 需為 ≤500 字的字串或 null")
+        c = t.get("confidence")
+        if c is not None and not (isinstance(c, (int, float)) and not isinstance(c, bool) and 0 <= c <= 1):
+            errs.append(f"{w}.confidence 需在 0–1")
+        picks.append(PickIn(str(tk), t.get("conviction"), t.get("basis"),
+                            list(t["obs_ids"]) if isinstance(t.get("obs_ids"), list) else [], str(t.get("logic", "")), ce, c))
+    exits, seen_x = [], set()
+    for i, t in enumerate(exits_in):
+        w = f"exits[{i}]"
+        if not isinstance(t, dict):
+            errs.append(f"{w} 必須是物件")
+            continue
+        bad = set(t) - {"ticker", "obs_ids", "logic"}
+        if bad:
+            errs.append(f"{w} 多出欄位 {sorted(bad)}")
+        tk = t.get("ticker")
+        if not (isinstance(tk, str) and re.fullmatch(r"\d{4}", tk)) or tk in seen_x:
+            errs.append(f"{w}.ticker 需為不重複的 4 位數字字串")
+        seen_x.add(tk)
+        if tk in seen:
+            errs.append(f"{w}.ticker {tk} 同時出現在 picks 與 exits")
+        if not _obs_list(t.get("obs_ids")):
+            errs.append(f"{w}.obs_ids 需為 1–10 個 obs_id")
+        if not isinstance(t.get("logic"), str) or not 20 <= len(t["logic"]) <= 1000:
+            errs.append(f"{w}.logic 需為 20–1000 字的字串")
+        exits.append(ExitIn(str(tk), list(t["obs_ids"]) if isinstance(t.get("obs_ids"), list) else [], str(t.get("logic", ""))))
+    if errs:
+        return None, errs
+    return PicksProposal(mv, picks, exits), []

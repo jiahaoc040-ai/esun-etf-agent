@@ -1,7 +1,7 @@
 """把行情、三大法人、台指期夜盤、美股／ADR、新聞與公開資訊事件轉成 D-Plan 的 sources 與 observations。
 
 原則（撰寫指南 ②）：observations 只寫「可核對的事實」，values 只放數字，不放判斷。
-authority 依 config/strategy_declaration.json 的 tilt.allowed_bases：
+authority 依 config/strategy_declaration.json 的 selection.allowed_bases：
   財報／月營收／重大訊息 → mops；法說會 → mops 或 media；投信連續買賣超 → twse（上市）／tpex（上櫃）。
 其他：台指期夜盤 taifex、美股／ADR vendor、新聞 media、個股價量 twse／tpex（上市／上櫃各自一個 source，不可混用）。
 
@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from ..data.market import source_info
-from ..strategy.declaration import SOURCE_AUTHORITIES, load_declaration
+from ..strategy.declaration import SOURCE_AUTHORITIES, allowed_bases, load_declaration
 from ..universe import authority_for, load_universe
 
 TZ = timezone(timedelta(hours=8))
@@ -239,7 +239,7 @@ def event_observation(b: EvidenceBuilder, e: dict, declaration: dict | None = No
     decl = declaration or load_declaration()
     basis, ticker = e.get("basis"), e.get("ticker")
     if basis is not None:
-        allowed = next((x for x in decl["tilt"]["allowed_bases"] if x["id"] == basis), None)
+        allowed = next((x for x in allowed_bases(decl) if x["id"] == basis), None)
         if allowed is None:
             raise ValueError(f"未知的 tilt 依據 {basis}")
         if e["authority"] not in allowed["authority"]:
@@ -298,3 +298,76 @@ def prune(ev: Evidence, used_obs: set[str]) -> tuple[list[dict], list[dict], dic
         omap[o["obs_id"]] = f"O{len(obs) + 1}"
         obs.append({**o, "obs_id": omap[o["obs_id"]], "source_ref": [smap[s] for s in o["source_ref"]]})
     return sources, obs, omap
+
+
+# ----------------------------------------------------------------------------- 集中策略：候選池、部位、湊檔股、事件
+
+EVENT_URLS = {"fomc": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+              "nvidia_earnings": "https://investor.nvidia.com/events-and-presentations/default.aspx",
+              "us_election": "https://www.fec.gov/introduction-campaign-finance/election-results-and-voting-information/"}
+
+
+def candidate_observations(b: EvidenceBuilder, panel, date: str, cands) -> dict[str, dict[str, str]]:
+    """候選池每檔兩則 observation：
+      candidate_screen（basis=None）：候選分數與組成（投信 5／10 日淨買超占成交值、20 日相對強度、成交值放大、
+          與主動型 ETF 前 15 大重疊檔數）——選股排序用，不是可單獨引用的依據（含技術面）。
+      trust_flow（basis=trust_flow）：投信近 5／10 日淨買超金額占成交值，加上連續買賣超天數——可作為「投信連買」依據。
+    回傳 {ticker: {"screen": obs_id, "trust": obs_id 或缺}}。"""
+    mk = market_sources(b, date)
+    inst = institutional_sources(b, date)
+    i = panel.dates.index(date)
+    out: dict[str, dict[str, str]] = {}
+    for t, r in cands.iterrows():
+        a = authority_for(t)
+        tag = "（持有中）" if r.get("held") and not r.get("in_pool") else ("（2330 固定列入）" if r.get("forced") and not r.get("in_pool") else "")
+        st = (f"{t} 候選分數 {r['score']:+.2f}（第 {int(r['rank'])} 名）{tag}：投信近 5 日淨買超占成交值 {r['inst5'] * 100:+.2f}%、"
+              f"近 10 日 {r['inst10'] * 100:+.2f}%；20 日報酬相對 150 檔中位數 {r['rs20'] * 100:+.1f}%；"
+              f"近 5 日均成交值為 20 日均的 {math.exp(r['valchg']):.2f} 倍；出現在 {int(r['overlap_n'])} 檔主動型 ETF 前 15 大")
+        vals = {"score": float(r["score"]), "rank": int(r["rank"]), "trust5_pct": float(r["inst5"] * 100),
+                "trust10_pct": float(r["inst10"] * 100), "rs20_pct": float(r["rs20"] * 100),
+                "value_ratio_5_20": float(math.exp(r["valchg"])), "etf_overlap_n": int(r["overlap_n"])}
+        o = {"screen": b.add_obs([mk[a], inst[a]], "candidate_screen", st, vals, ticker=t,
+                                 as_of=f"{date}T17:30:00+08:00")}
+        n, net, ratio = trust_streak(panel, t, i)
+        if abs(r["inst10"]) > 1e-6 or n:
+            verb = "買超" if r["inst10"] >= 0 else "賣超"
+            st2 = (f"{t} 投信近 10 日淨{verb}金額占同期成交值 {abs(r['inst10']) * 100:.2f}%、近 5 日 {r['inst5'] * 100:+.2f}%"
+                   + (f"；目前連續 {abs(n)} 日{'買超' if n > 0 else '賣超'}" if n else ""))
+            o["trust"] = b.add_obs([inst[a]], "trust_flow", st2,
+                                   {"trust10_pct": float(r["inst10"] * 100), "trust5_pct": float(r["inst5"] * 100),
+                                    "streak_days": int(n)}, ticker=t, basis="trust_flow", as_of=f"{date}T17:30:00+08:00")
+        out[t] = o
+    return out
+
+
+def position_observation(b: EvidenceBuilder, date: str, ticker: str, entry_date: str, ret: float | None,
+                         days_held: int, level: str) -> str:
+    """高信心持股的成本與報酬（停損與最短持有判斷用）。成本 = 進場交易日成交均價（還原價口徑）。"""
+    src = market_sources(b, date)[authority_for(ticker)]
+    if ret is None:
+        st = f"{ticker} 於 {entry_date} 列入高信心部位（{'高' if level == 'high' else '中'}），已持有 {days_held} 個交易日，尚無成交後收盤資料"
+        vals = {"days_held": days_held}
+    else:
+        st = (f"{ticker} 於 {entry_date} 列入高信心部位（{'高' if level == 'high' else '中'}），已持有 {days_held} 個交易日，"
+              f"{date} 收盤相對成本（進場日成交均價）{ret * 100:+.2f}%")
+        vals = {"days_held": days_held, "ret_vs_cost_pct": ret * 100}
+    return b.add_obs([src], "position_pnl", st, vals, ticker=ticker, as_of=_close_time(date))
+
+
+def filler_observation(b: EvidenceBuilder, date: str, fillers: list[str], weight: float, pool: int) -> str:
+    srcs = market_sources(b, date)
+    st = (f"依 {date} 收盤市值（收盤價 × 發行股數），市值前 {pool} 大且不在高信心名單者取最大的 {len(fillers)} 檔："
+          + "、".join(fillers))[:500]
+    return b.add_obs([srcs["twse"], srcs["tpex"]], "filler_universe", st,
+                     {"n_fillers": len(fillers), "filler_weight_pct": weight * 100, "pool_size": pool},
+                     as_of=_close_time(date))
+
+
+def blackout_observation(b: EvidenceBuilder, events: list[dict], date: str, trade_date: str) -> str:
+    """高波動事件行事曆（決策日 D 已知的公開排程；content_as_of 取 D 日 08:00）。"""
+    ev = events[0]
+    sid = b.add_source("other", ev.get("url") or EVENT_URLS.get(ev["kind"], EVENT_URLS["fomc"]),
+                       f"{date}T08:00:00+08:00", name=f"{ev['name']} 排程")
+    st = (f"{'、'.join(e['name'] for e in events)} 將於美國時間 {events[0]['date']} 揭曉，"
+          f"在 {trade_date} 台股收盤之後")
+    return b.add_obs([sid], "event_calendar", st, {"n_events": len(events)}, as_of=f"{date}T08:00:00+08:00")

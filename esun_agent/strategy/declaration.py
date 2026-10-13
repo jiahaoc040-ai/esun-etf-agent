@@ -1,6 +1,7 @@
 """config/strategy_declaration.json 的讀取與驗證（T4 的 prompt 與 T6 的說明文件都讀這份）。
 
-JSON 內的 portfolio_rules 必須與 FinalParams 預設值一致：程式參數與對外宣告只有一個真相來源，
+v2（集中主題＋事件驅動）：portfolio_rules ↔ ConvictionParams、candidate_rules ↔ CandidateParams、
+fallback.portfolio_rules ↔ FinalParams（降級保底：合規基準 A）必須與程式預設值一致：程式參數與對外宣告只有一個真相來源，
 改參數卻忘了改宣告（或反過來）會在測試中失敗，避免「宣告的策略」與「實際跑的策略」不同。
 """
 from __future__ import annotations
@@ -11,10 +12,13 @@ from dataclasses import fields
 from pathlib import Path
 
 from ..config import ROOT
+from .candidates import CandidateParams
+from .conviction import ConvictionParams
 from .final import FinalParams
 
 DECLARATION_PATH = ROOT / "config" / "strategy_declaration.json"
-REQUIRED_KEYS = ["version", "etf", "theme", "philosophy", "benchmark", "portfolio_rules", "rebalance_policy", "tilt"]
+REQUIRED_KEYS = ["version", "etf", "theme", "philosophy", "benchmark", "portfolio_rules", "candidate_rules",
+                 "rebalance_policy", "selection", "discipline", "fallback"]
 TILT_BASIS_IDS = {"financial_report", "investor_conference", "monthly_revenue", "trust_flow", "material_news"}
 SOURCE_AUTHORITIES = {"twse", "tpex", "taifex", "mops", "fininst", "media", "vendor"}
 
@@ -50,34 +54,49 @@ def validate_submission(d: dict) -> list[str]:
     return errs
 
 
+def allowed_bases(decl: dict) -> list[dict]:
+    """五種可引用的依據（id、label、authority…）。"""
+    return decl["selection"]["allowed_bases"]
+
+
+def _match(rules: dict, obj, where: str, skip=()) -> list[str]:
+    errs = []
+    for f in fields(obj):
+        if f.name in skip:
+            continue
+        want = getattr(obj, f.name)
+        want = list(want) if isinstance(want, tuple) else want
+        if f.name not in rules:
+            errs.append(f"{where} 缺 {f.name}")
+        elif rules[f.name] != want:
+            errs.append(f"{where}.{f.name}={rules[f.name]} 與程式預設 {want} 不一致")
+    return errs
+
+
 def validate_declaration(d: dict) -> list[str]:
     errs = [f"缺少欄位 {k}" for k in REQUIRED_KEYS if k not in d]
     if errs:
         return errs
     errs += validate_submission(d)
-    defaults = FinalParams()
-    rules = d["portfolio_rules"]
-    for f in fields(defaults):
-        if f.name == "ap_max_iter":
-            continue
-        if f.name not in rules:
-            errs.append(f"portfolio_rules 缺 {f.name}")
-        elif rules[f.name] != getattr(defaults, f.name):
-            errs.append(f"portfolio_rules.{f.name}={rules[f.name]} 與程式預設 {getattr(defaults, f.name)} 不一致")
+    errs += _match(d["portfolio_rules"], ConvictionParams(), "portfolio_rules")
+    errs += _match(d["candidate_rules"], CandidateParams(), "candidate_rules")
+    errs += _match(d["fallback"].get("portfolio_rules", {}), FinalParams(), "fallback.portfolio_rules", skip=("ap_max_iter",))
     if d.get("status") not in ("draft", "final"):
         errs.append(f"status 應為 draft 或 final: {d.get('status')!r}")
     elif d["status"] == "final":
         if not str(d["etf"].get("name", "")).strip() or d["etf"].get("name_status") != "final":
             errs.append("status=final 時 etf.name 不可為空且 etf.name_status 必須是 final")
-        if any(b.get("authority_status") != "confirmed" for b in d["tilt"].get("allowed_bases", [])):
-            errs.append("status=final 時每個 tilt 依據的 authority_status 都必須是 confirmed")
-    bases = d["tilt"].get("allowed_bases", [])
+        if any(b.get("authority_status") != "confirmed" for b in d["selection"].get("allowed_bases", [])):
+            errs.append("status=final 時每個依據的 authority_status 都必須是 confirmed")
+    bases = d["selection"].get("allowed_bases", [])
     ids = {b.get("id") for b in bases}
     if ids != TILT_BASIS_IDS:
-        errs.append(f"tilt.allowed_bases 的 id 應為 {sorted(TILT_BASIS_IDS)}，實際 {sorted(i for i in ids if i)}")
+        errs.append(f"selection.allowed_bases 的 id 應為 {sorted(TILT_BASIS_IDS)}，實際 {sorted(i for i in ids if i)}")
     for b in bases:
         if not b.get("authority") or not set(b["authority"]) <= SOURCE_AUTHORITIES:
             errs.append(f"{b.get('id')} 的 authority 不合法: {b.get('authority')}")
-    if d["tilt"]["limits"].get("per_name_abs_delta") != defaults.max_delta:
-        errs.append("tilt.limits.per_name_abs_delta 與 FinalParams.max_delta 不一致")
+    if set(d["selection"].get("conviction_levels", {})) != {"high", "medium"}:
+        errs.append("selection.conviction_levels 需為 high 與 medium")
+    if d["fallback"].get("tilt_limits", {}).get("per_name_abs_delta") != FinalParams().max_delta:
+        errs.append("fallback.tilt_limits.per_name_abs_delta 與 FinalParams.max_delta 不一致")
     return errs

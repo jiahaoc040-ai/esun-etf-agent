@@ -1,4 +1,4 @@
-"""主動型 ETF 前 10 大持股（Active Share 比對基準）。
+"""主動型 ETF 前 N 大持股（Active Share 比對基準；1005 更新後官方比較前 15 大，MoneyDJ 多數只揭露前 10 大）。
 
 單一資料源：MoneyDJ「持股明細」頁
   https://www.moneydj.com/ETF/X/Basic/Basic0007.xdjhtm?etfid={code}.TW
@@ -26,7 +26,7 @@ from pathlib import Path
 import requests
 
 from ..active_share import check_active_share, top_n
-from ..config import ACTIVE_SHARE_MIN, ACTIVE_SHARE_TOP_N, REFERENCE_DIR, ROOT
+from ..config import ACTIVE_SHARE_MIN, ACTIVE_SHARE_TOP_N, ETF_HOLDINGS_MIN_ROWS, REFERENCE_DIR, ROOT
 from ..universe import load_active_etfs
 
 ETF_TOP10_DIR = ROOT / "data" / "etf_top10"
@@ -110,7 +110,7 @@ def parse_moneydj(html: str, what: str = "") -> dict:
     """解析 MoneyDJ 持股明細頁 → {"data_date": "YYYY-MM-DD", "holdings": {ticker: weight(小數)}}。
 
     找「持股明細」之後的每個「資料日期」，若其後緊接的第一個表格表頭含「個股名稱」與「投資比例」，即為持股表。
-    名稱含「現金／期貨／保證金／應收／應付／附買回」的列排除。有效列（名稱非空且比例可解析）少於 10 → ValueError；多於 10 取權重前 10 大。
+    名稱含「現金／期貨／保證金／應收／應付／附買回」的列排除。有效列（名稱非空且比例可解析）少於 10 → ValueError；多於 15 取權重前 15 大（ACTIVE_SHARE_TOP_N）。
     """
     marker = html.find("持股明細")
     if marker < 0:
@@ -137,12 +137,12 @@ def parse_moneydj(html: str, what: str = "") -> dict:
                 if t is None or w is None:
                     continue
                 holdings[t] = holdings.get(t, 0.0) + w / 100.0
-            if len(holdings) < ACTIVE_SHARE_TOP_N:
-                last_err = f"只解析出 {len(holdings)} 檔持股（需要至少 {ACTIVE_SHARE_TOP_N}）"
+            if len(holdings) < ETF_HOLDINGS_MIN_ROWS:
+                last_err = f"只解析出 {len(holdings)} 檔持股（需要至少 {ETF_HOLDINGS_MIN_ROWS}）"
                 break
             out = {t: round(w, 6) for t, w in top_n(holdings).items()}
             if not 0.05 <= sum(out.values()) <= 1.0001:
-                raise ValueError(f"{what}: 前 10 大權重總和 {sum(out.values()):.4f} 不合理")
+                raise ValueError(f"{what}: 前 N 大權重總和 {sum(out.values()):.4f} 不合理")
             y, mo, d = (int(x) for x in m.groups())
             return {"data_date": date(y, mo, d).isoformat(), "holdings": out}
         # 這個「資料日期」後面沒有持股表 → 試下一個
@@ -216,7 +216,7 @@ def fetch_all(day: date | str, raw_dir: Path | None = None, sources: dict[str, d
 # --------------------------------------------------------------------------- 手動補資料
 
 def write_manual_template(codes: list[str], path: Path) -> Path:
-    """每個缺漏的 ETF 產生 10 列空白（rank 1~10），使用者填 ticker 與 weight_pct（百分比，如 8.52）。"""
+    """每個缺漏的 ETF 產生 15 列空白（rank 1~15，至少填 10 列），使用者填 ticker 與 weight_pct（百分比，如 8.52）。"""
     names = load_active_etfs()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
@@ -248,8 +248,8 @@ def load_manual(path: Path) -> dict[str, dict[str, float]]:
                 raise ValueError(f"{path.name}: {code} 的 {t} 重複")
             rows[code][t] = w / 100.0
     for code, h in rows.items():
-        if len(h) < ACTIVE_SHARE_TOP_N:
-            raise ValueError(f"{path.name}: {code} 只填了 {len(h)} 檔，需要 {ACTIVE_SHARE_TOP_N} 檔")
+        if len(h) < ETF_HOLDINGS_MIN_ROWS:
+            raise ValueError(f"{path.name}: {code} 只填了 {len(h)} 檔，需要至少 {ETF_HOLDINGS_MIN_ROWS} 檔")
         if not 0.05 <= sum(h.values()) <= 1.0001:
             raise ValueError(f"{path.name}: {code} 權重總和 {sum(h.values()):.4f} 不合理（weight_pct 要填百分比）")
     return {c: {t: round(w, 6) for t, w in top_n(h).items()} for c, h in rows.items()}

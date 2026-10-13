@@ -100,7 +100,7 @@ def test_update_json_template_manual(tmp_path):
     assert saved["data_dates"]["00988A"] == "2026-10-02" and saved["stale"] == {"00988A": 4}
     assert saved["top10"]["00981A"] == EXPECTED and saved["overseas"] == ["00989A"]
     rows = list(csv.DictReader((tmp_path / "manual_template.csv").open(encoding="utf-8-sig")))
-    assert len(rows) == 20 and {r["etf_code"] for r in rows} == {"00984A", "00982A"}
+    assert len(rows) == 30 and {r["etf_code"] for r in rows} == {"00984A", "00982A"}   # 每檔 15 列（前 15 大）
     with open(tmp_path / "manual.csv", "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(eh.MANUAL_COLUMNS)
@@ -135,7 +135,7 @@ def test_check_target_weights_pass_and_fail():
     assert not r["ok"] and r["fails"][0]["etf"] == "00981A"
     f = r["fails"][0]
     assert f["overlap_tickers"][0]["ticker"] == "2330"
-    assert f["needed_cut"] == pytest.approx(0.2, abs=1e-3)
+    assert f["needed_cut"] == pytest.approx(eh.ACTIVE_SHARE_MIN, abs=1e-3)
 
 
 def test_check_target_weights_margin_and_missing():

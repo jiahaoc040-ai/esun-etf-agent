@@ -9,16 +9,22 @@ from esun_agent.agent.observations import BASIS_LABELS
 from esun_agent.strategy.declaration import load_declaration
 
 SUMMARY = {
-    "oos_start": "2026-08-01", "oos_days": 44, "cap_source": "issued_shares", "universe_dates": ["2025-01-02", "2026-10-05"],
-    "benchmarks_oos": {"a_equal_weight": 0.221, "b_cap_weight_capped": 0.208, "a_mdd": -0.05, "b_mdd": -0.043},
-    "baseline_oos": {"total_return": 0.2101, "mdd": -0.0501, "ap_min": 0.218, "turnover_ann": 3.3, "cost_drag_ann": 0.019},
-    "baseline_is": {"total_return": 1.19, "mdd": -0.21, "ap_min": 0.218, "turnover_ann": 2.2, "cost_drag_ann": 0.012},
-    "ap_fix_tiers": {"minimal": 54, "wider": 18, "full": 1},
-    "random_tilt": {"n": 100, "ret": {"mean": 0.199, "p5": 0.182, "p95": 0.217, "min": 0.17, "max": 0.238},
-                    "excess_vs_b": {"mean": -0.009, "p5": -0.026, "p95": 0.008},
-                    "mdd": {"mean": -0.049, "min": -0.056}, "ap_min_all": {"min": 0.172}, "turnover": {"mean": 6.7},
-                    "violations": {"holdings": 0, "weight": 0, "cash": 0, "ap_below_20_days": 18, "ap_max_consecutive": 1}},
-    "stress_daily_tilt": {"n": 30, "ret": {"mean": 0.178}, "turnover": {"mean": 28.2}},
+    "first": "2025-04-01", "oos_start": "2026-08-01", "length": 24, "step": 2, "universe_dates": ["2025-01-02", "2026-10-05"],
+    "strict": {"n": 171, "excess": {"n": 171, "mean": -0.012, "p5": -0.133, "p95": 0.089, "p_gt_5": 0.19, "p_gt_10": 0.04, "p_lt_m10": 0.12},
+        "mdd": {"mean": -0.073}, "turnover": {"mean": 3.2}, "cost": {"mean": 0.018}, "sum_v_holdings": 0, "sum_v_cash": 0,
+        "sum_ap_fail_days": 0, "sum_drift_days": 82},
+    "strict_oos": {"n": 11, "excess": {"n": 11, "mean": -0.112, "p5": -0.2, "p95": -0.05, "p_gt_5": 0.0, "p_gt_10": 0.0, "p_lt_m10": 0.64},
+        "mdd": {"mean": -0.09}, "turnover": {"mean": 3.2}, "cost": {"mean": 0.018}, "sum_v_holdings": 0, "sum_v_cash": 0,
+        "sum_ap_fail_days": 0, "sum_drift_days": 82},
+    "hysteresis": {"n": 171, "excess": {"n": 171, "mean": 0.004, "p5": -0.12, "p95": 0.13, "p_gt_5": 0.26, "p_gt_10": 0.13, "p_lt_m10": 0.09},
+        "mdd": {"mean": -0.06}, "turnover": {"mean": 3.2}, "cost": {"mean": 0.018}, "sum_v_holdings": 0, "sum_v_cash": 0,
+        "sum_ap_fail_days": 0, "sum_drift_days": 82},
+    "tsmc_fixed": {"n": 171, "excess": {"n": 171, "mean": -0.013, "p5": -0.13, "p95": 0.09, "p_gt_5": 0.13, "p_gt_10": 0.04, "p_lt_m10": 0.12},
+        "mdd": {"mean": -0.07}, "turnover": {"mean": 3.2}, "cost": {"mean": 0.018}, "sum_v_holdings": 0, "sum_v_cash": 0,
+        "sum_ap_fail_days": 0, "sum_drift_days": 82},
+    "base_a": {"n": 171, "excess": {"n": 171, "mean": -0.009, "p5": -0.037, "p95": 0.031, "p_gt_5": 0.02, "p_gt_10": 0.0, "p_lt_m10": 0.0},
+        "mdd": {"mean": -0.05}, "turnover": {"mean": 3.2}, "cost": {"mean": 0.018}, "sum_v_holdings": 0, "sum_v_cash": 0,
+        "sum_ap_fail_days": 0, "sum_drift_days": 82},
 }
 
 
@@ -68,21 +74,25 @@ def test_form_only(tmp_path):
 def test_supplement_content_and_numbers(tmp_path):
     decl = load_declaration()
     t = texts(build(tmp_path))
-    for h in ("補充說明", "一、主體", "二、超額來源", "三、回測摘要", "四、每日 D-Plan"):
+    for h in ("補充說明", "一、投組結構", "二、超額來源", "三、換股紀律", "四、代理回測摘要", "五、降級保底", "六、每日 D-Plan"):
         assert h in t
     r = decl["portfolio_rules"]
     # 規則數字來自宣告檔
-    assert f"{r['ap_target']:.0%}" in t and f"{r['ap_trigger']:.0%}" in t and f"{r['ap_recovery_target']:.0%}" in t
-    assert f"{r['max_delta']:.0%}" in t and f"{r['max_active']:.0%}" in t and f"{r['band']:.0%}" in t
-    for b in decl["tilt"]["allowed_bases"]:
-        assert b["label"] in t and b["id"] in t
+    for x in (r["w_high"], r["w_mid"], r["cap_tsmc"], r["ap_target"], r["ap_recovery_target"], r["cash_high"]):
+        assert f"{x * 100:.0f}%" in t, x
+    assert f"{r['n_conv_min']}–{r['n_conv_max']} 檔" in t and f"{r['n_total_min']}–{r['n_total_max']} 檔" in t
+    for k in ("min_hold_days", "max_swaps", "stop_loss", "event_blackout"):
+        assert decl["discipline"][k] in t
+    for b in decl["selection"]["allowed_bases"]:
+        assert b["label"] in t
         for a in b["authority"]:
             assert a in t
+    assert decl["fallback"]["name"] in t and "凍結" in t
     # 回測數字來自摘要，不是寫死
-    for s in ("+22.1%", "+20.8%", "+21.0%", "-0.9%", "2026-08-01", "44 個交易日"):
-        assert s in t, s
+    for s_ in ("19%", "4%", "12%", "-13.3%", "+8.9%", "2026-08-01", "-11.2%", "24 個交易日"):
+        assert s_ in t, s_
     assert "前視與倖存者偏誤" in t and "不證明 Agent" in t                      # 名單偏誤與限制必須寫明
-    assert "連續 2 日" in t
+    assert "連續 2 日" in t and "FOMC" in t
 
 
 def test_every_section_maps_to_dplan_fields(tmp_path):
@@ -97,9 +107,9 @@ def test_every_section_maps_to_dplan_fields(tmp_path):
 
 
 def test_mapping_matches_agent_code(env=None):
-    """文件裡引用的 observation topic／依據 id 必須是 T4 程式真的會產生的。"""
+    """文件裡引用的 observation topic／依據 id 必須是 Agent 程式真的會產生的。"""
     decl = load_declaration()
-    assert {b["id"] for b in decl["tilt"]["allowed_bases"]} == set(BASIS_LABELS)
+    assert {b["id"] for b in decl["selection"]["allowed_bases"]} == set(BASIS_LABELS)
     assert {t for t, _ in sd.MARKET_TOPICS} == {"tw_market", "inst_flow", "taifex_night", "us_overnight"}
     from esun_agent.agent import observations as ob
     from esun_agent.data.prices import load_panel
@@ -108,6 +118,11 @@ def test_mapping_matches_agent_code(env=None):
         "taifex": {"url": "https://x.example/t", "content_as_of": "2026-10-02T05:00:00+08:00", "close": 1.0, "chg_pct": 0.1},
         "us": {"url": "https://x.example/u", "content_as_of": "2026-10-02T04:00:00+08:00", "quotes": {"SOX": {"chg_pct": 1.0}}}})
     assert {t for t, _ in sd.MARKET_TOPICS} <= {o["topic"] for o in ev.observations}
+    import inspect
+    from esun_agent.agent import conviction_agent
+    src = inspect.getsource(ob) + inspect.getsource(conviction_agent)
+    for topic, _ in sd.STRATEGY_TOPICS:
+        assert f'"{topic}"' in src, topic
 
 
 def test_cli(tmp_path, capsys):
@@ -125,10 +140,10 @@ def test_cli(tmp_path, capsys):
 
 def test_real_summary_file_builds_when_present(tmp_path):
     if not sd.SUMMARY_PATH.exists():
-        pytest.skip("尚未產生 docs/final_strategy_backtest.json")
+        pytest.skip("尚未產生 docs/conviction_backtest.json")
     S = sd.load_summary()
     d = docx.Document(str(sd.build_strategy_doc(tmp_path / "real.docx", summary=S)))
-    assert pct_in(S["baseline_oos"]["total_return"], texts(d))
+    assert pct_in(S["strict"]["excess"]["p5"], texts(d)) and pct_in(S["strict_oos"]["excess"]["mean"], texts(d))
 
 
 def pct_in(x, t):

@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from esun_agent.config import ACTIVE_SHARE_MIN
+
 from esun_agent import backtest as bt
 from esun_agent.data.etf_holdings import check_target_weights
 from esun_agent.strategy import factors as fa
@@ -78,12 +80,12 @@ def test_ensure_active_share_minimal_then_escalates():
     w = flat_base()
     names = sorted(w, key=lambda t: (-w[t], t))
     pp = P.portfolio_params()
-    partial = {"E": {**{t: 0.1 for t in names[:8]}, TICKERS[50]: 0.1, TICKERS[51]: 0.1}}   # 與我方前 10 大重疊 8 檔
+    partial = {"E": {**{t: 0.1 for t in names[:12]}, **{t: 0.1 for t in TICKERS[50:53]}}}   # 與我方前 15 大重疊 12 檔
     assert check_target_weights(w, partial, margin=0.0, expected_etfs=["E"])["min"] < 0.27
     out, res, tier = fi.ensure_active_share(w, partial, pp)
     assert tier == "minimal" and res["min"] >= 0.27 - 1e-9
     assert len([t for t in w if out[t] < w[t] - 1e-9]) <= 3                      # 最小調整只減 1–3 檔
-    many = {f"E{i}": {t: w[t] for t in names[i * 3:i * 3 + 10]} for i in range(5)}  # 5 檔 ETF 的前 10 大輪流蓋住全部持股
+    many = {f"E{i}": {t: w[t] for t in names[i * 3:i * 3 + 15]} for i in range(5)}  # 5 檔 ETF 的前 15 大輪流蓋住全部持股
     out, res, tier = fi.ensure_active_share(w, many, pp)
     assert tier == "full" and res["min"] >= 0.27 - 1e-9
     assert fi.ensure_active_share(w, None, pp) == (w, None, "none")
@@ -181,7 +183,7 @@ def test_active_share_rechecked_after_tilts():
     ap = check_target_weights(r.weights, etf2, margin=0.0, expected_etfs=["E"])
     assert ap["min"] >= 0.27 - 1e-6 or any("active_share" in n for n in r.notes)
     assert ap["ok"] and sum(r.weights.values()) <= 1 - P.cash_low + 1e-9
-    assert pp.ap_margin == pytest.approx(0.07)
+    assert pp.ap_margin == pytest.approx(0.27 - ACTIVE_SHARE_MIN)
 
 
 def test_hard_active_share_failure():
@@ -271,12 +273,13 @@ def test_random_tilt_simulations_never_violate_rules():
 # ------------------------------------------------------------------ 宣告檔
 def test_declaration_loads_and_matches_code():
     d = load_declaration()
-    assert d["tilt"]["limits"]["per_name_abs_delta"] == 0.03 and d["portfolio_rules"]["ap_target"] == 0.27
-    ids = {b["id"] for b in d["tilt"]["allowed_bases"]}
+    fb = d["fallback"]                                                        # v2：合規基準 A 是降級保底
+    assert fb["tilt_limits"]["per_name_abs_delta"] == 0.03 and fb["portfolio_rules"]["ap_target"] == 0.27
+    ids = {b["id"] for b in d["selection"]["allowed_bases"]}
     assert ids == {"financial_report", "investor_conference", "monthly_revenue", "trust_flow", "material_news"}
     assert d["status"] == "final" and d["etf"]["name"] == "主動台灣核心優選 AI" and d["etf"]["name_status"] == "final"
-    assert d["portfolio_rules"]["ap_target"] == 0.27 and d["portfolio_rules"]["ap_trigger"] == 0.22
-    by_id = {b["id"]: b for b in d["tilt"]["allowed_bases"]}
+    assert fb["portfolio_rules"]["ap_target"] == 0.27 and fb["portfolio_rules"]["ap_trigger"] == 0.22
+    by_id = {b["id"]: b for b in d["selection"]["allowed_bases"]}
     assert {i: set(b["authority"]) for i, b in by_id.items()} == {
         "financial_report": {"mops"}, "investor_conference": {"mops", "media"}, "monthly_revenue": {"mops"},
         "trust_flow": {"twse", "tpex"}, "material_news": {"mops"}}
@@ -286,10 +289,10 @@ def test_declaration_loads_and_matches_code():
 def test_declaration_detects_drift_from_code():
     d = json.loads(DECLARATION_PATH.read_text(encoding="utf-8"))
     bad = copy.deepcopy(d)
-    bad["portfolio_rules"]["max_active"] = 0.2
+    bad["fallback"]["portfolio_rules"]["max_active"] = 0.2
     assert any("max_active" in e for e in validate_declaration(bad))
     bad = copy.deepcopy(d)
-    bad["tilt"]["allowed_bases"] = bad["tilt"]["allowed_bases"][:3]
+    bad["selection"]["allowed_bases"] = bad["selection"]["allowed_bases"][:3]
     assert any("allowed_bases" in e for e in validate_declaration(bad))
     bad = copy.deepcopy(d)
     del bad["benchmark"]
@@ -302,7 +305,7 @@ def test_declaration_final_status_requirements():
     bad["etf"]["name_status"] = "draft"
     assert any("name_status" in e for e in validate_declaration(bad))
     bad = copy.deepcopy(d)
-    bad["tilt"]["allowed_bases"][0]["authority_status"] = "pending"
+    bad["selection"]["allowed_bases"][0]["authority_status"] = "pending"
     assert any("authority_status" in e for e in validate_declaration(bad))
     bad = copy.deepcopy(d)
     bad["status"] = "wip"
