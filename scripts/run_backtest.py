@@ -21,7 +21,7 @@ from esun_agent.attribution import LADDER, attribution_ladder  # noqa: E402
 from esun_agent.backtest import (cap_weight_benchmark, equal_weight_benchmark, perf, run_backtest,  # noqa: E402
                                  window_returns)
 from esun_agent.config import ROOT  # noqa: E402
-from esun_agent.data.etf_holdings import load_top10  # noqa: E402
+from esun_agent.data.etf_holdings import load_top15  # noqa: E402
 from esun_agent.data.prices import load_panel  # noqa: E402
 from esun_agent.strategy.compliance import ComplianceBenchmark, ComplianceParams  # noqa: E402
 from esun_agent.strategy.core_satellite import CoreSatellite, CoreSatelliteParams  # noqa: E402
@@ -92,7 +92,7 @@ def main(argv=None) -> int:
 
     panel = load_panel()
     factors = compute_factors(panel)
-    top10 = load_top10()
+    top15 = load_top15()
     caps, cap_src = market_cap(panel)
     strategies = build_strategies()
     dates = panel.dates
@@ -102,7 +102,7 @@ def main(argv=None) -> int:
     cw_full = cap_weight_benchmark(panel, caps)
     results = {}
     for s in strategies:
-        results[s.name] = run_backtest(panel, s, factors, top10, caps=caps)
+        results[s.name] = run_backtest(panel, s, factors, top15, caps=caps)
         print(s.name, file=sys.stderr)
 
     first_base = next(iter(results.values())).nav.index[0]
@@ -185,8 +185,8 @@ def main(argv=None) -> int:
     L.append("## 3. 初賽長度（24 個交易日）超額報酬分布\n")
     L.append(f"每 {a.window_step} 個交易日起算一段、從 10 億現金重新建倉（含建倉成本與每 5 日再平衡）的 24 日回測，策略 `{best['name']}`。"
              "超額 = 策略該段報酬 − 基準同段報酬。\n")
-    w_oos = window_returns(panel, bstrat, factors, top10, 24, a.window_step, first=OOS_START, caps=caps, bench_cw=cw_full)
-    w_is = window_returns(panel, bstrat, factors, top10, 24, a.window_step, last=IS_END, caps=caps, bench_cw=cw_full)
+    w_oos = window_returns(panel, bstrat, factors, top15, 24, a.window_step, first=OOS_START, caps=caps, bench_cw=cw_full)
+    w_is = window_returns(panel, bstrat, factors, top15, 24, a.window_step, last=IS_END, caps=caps, bench_cw=cw_full)
     L.append("**起點在樣本外（T ≥ 2026-08-01）——僅此組可信**\n\n" + dist_table(w_oos) + "\n")
     L.append("**樣本內（有偏誤，僅供參考）**\n\n" + dist_table(w_is) + "\n")
 
@@ -200,7 +200,7 @@ def main(argv=None) -> int:
              "目前市值是 60 日均成交值代理，(b) 基準與核心權重因此失真（見第 0 節），**拿到 shares_outstanding.csv 後必須重跑**；"
              "在那之前，超額報酬只能當暫定參考。") + """
 5. **核心的實際曝險**：核心只持有市值前 core_k 大，而 (b) 基準涵蓋 150 檔，兩者本來就有追蹤誤差；Active Share 修正若觸發會再壓低與主動型 ETF 重疊的標的、進一步偏離基準（全期間不足天數見第 2 節）。
-6. **模型假設**：均價成交、無市場衝擊、不含股利（官方期末加回，回測偏低估）；Active Share 用 2026-10-06 的 ETF 前 10 大靜態快照，歷史上不同，只是近似；衛星因子（投信買超、動能）在擁擠交易反轉時會同時失靈。
+6. **模型假設**：均價成交、無市場衝擊、不含股利與除權配股（官方除息現金與除權配發股數皆期末才一次加回，回測偏低估）；Active Share 用 2026-10-11 的 ETF 前 15 大持股靜態快照（MoneyDJ Basic0007B），歷史上不同，只是近似；衛星因子（投信買超、動能）在擁擠交易反轉時會同時失靈。
 7. **上線門檻建議**：以「樣本外超額報酬（兩個基準）為正、年換手與費用拖累可接受、違規 = 0」為準，不要以回測報酬調參；實盤前 22 天是第二次樣本外檢驗。
 """)
     # ------------------------------------------------------------------ 5. 績效歸因
@@ -211,7 +211,7 @@ def main(argv=None) -> int:
     ladders = {}
     for s_ in strategies:
         print("attribution", s_.name, file=sys.stderr)
-        ladders[s_.name] = attribution_ladder(panel, factors, caps, top10, s_.params, OOS_START, s_.name)
+        ladders[s_.name] = attribution_ladder(panel, factors, caps, top15, s_.params, OOS_START, s_.name)
     A_sel = ladders[best["name"]]
     L.append(f"### 選定組合 `{best['name']}`\n")
     L.append("| 階 | 因素 | 該階樣本外報酬 | 本因素貢獻（pp） |")
@@ -242,12 +242,12 @@ def main(argv=None) -> int:
     L.append("## 6. 合規對照組 A／B（樣本外）\n")
     L.append("- **A 合規基準**：用 (b) 的權重取前 28 檔重新歸一（單檔再套 2330 ≤ 20%、其他 ≤ 8%），不加衛星；現金 3%；每 5 日再平衡、無交易帶 2%；"
              "Active Share 修正 = 既有做法（全面壓低重疊最大者）。")
-    L.append("- **B 合規基準＋最小 Active Share 調整**：同 A，但 Active Share 修正只動造成重疊最大的 1–3 檔，並把減下來的權重分給權重排名第 11–28 名（且不在該 ETF 前 10 大）的標的。")
-    L.append("- A、B 另有「漂移保護」：前日收盤的現權重逼近官方上限（2330 > 24%、其他 > 9.5%）或 Active Share < 20.5% 時，不等 5 日週期、當天提前再平衡；"
+    L.append("- **B 合規基準＋最小 Active Share 調整**：同 A，但 Active Share 修正只動造成重疊最大的 1–3 檔，並把減下來的權重分給權重排名第 16–28 名（且不在該 ETF 前 15 大）的標的。")
+    L.append("- A、B 另有「漂移保護」：前日收盤的現權重逼近官方上限（2330 > 24%、其他 > 9.5%）或 Active Share < 15.5% 時，不等 5 日週期、當天提前再平衡；"
              "Active Share 緩衝用 3%（核心＋衛星用 2%）。選定組合沒有漂移保護，維持原規格。\n")
     comp = {}
     for nm, mode in (("A 合規基準", "full"), ("B 合規基準＋最小 AS 調整", "minimal")):
-        comp[nm] = run_backtest(panel, ComplianceBenchmark(nm, ComplianceParams(ap_mode=mode, ap_margin=0.03)), factors, top10, caps=caps)
+        comp[nm] = run_backtest(panel, ComplianceBenchmark(nm, ComplianceParams(ap_mode=mode, ap_margin=0.03)), factors, top15, caps=caps)
     comp[f"選定組合 {best['name']}"] = br
     L.append("| 組合 | OOS 報酬 | 超額 vs (a) 等權 | 超額 vs (b) 市值上限 | OOS MDD | Active Share 最低值（OOS／全期間） | OOS 年換手 | 年化費用拖累 | 違規次數（全期間） |")
     L.append("|---|---|---|---|---|---|---|---|---|")
@@ -262,9 +262,9 @@ def main(argv=None) -> int:
     L.append("")
     ra, rb = comp["A 合規基準"].summary(OOS_START, None), comp["B 合規基準＋最小 AS 調整"].summary(OOS_START, None)
     ex_a, ex_b = ra["total_return"] - b_cw["oos"], rb["total_return"] - b_cw["oos"]
-    L.append(f"**結論**：只要不加衛星，合規（20–30 檔、權重上限、Active Share ≥ 20%）的組合可以貼近 (b)——A 樣本外 {pct(ra['total_return'])}"
+    L.append(f"**結論**：只要不加衛星，合規（20–30 檔、權重上限、Active Share ≥ 15%）的組合可以貼近 (b)——A 樣本外 {pct(ra['total_return'])}"
              f"（相對 (b) {ex_a * 100:+.1f}pp）、B {pct(rb['total_return'])}（{ex_b * 100:+.1f}pp），Active Share 最低值 A {ppct(ra['ap_min'])}、B {ppct(rb['ap_min'])}"
-             "（B 只動 1–3 檔，比較貼近 20% 門檻）。因此選定組合落後的主因不是合規限制、費用或再平衡，而是衛星選股（見第 5 節）。"
+             "（B 只動 1–3 檔，比較貼近 15% 門檻）。因此選定組合落後的主因不是合規限制、費用或再平衡，而是衛星選股（見第 5 節）。"
              f"A、B 相對 (a) 等權的差距（{(ra['total_return'] - b_ew['oos']) * 100:+.1f}pp、{(rb['total_return'] - b_ew['oos']) * 100:+.1f}pp）"
              "是「只持 28 檔、現金 3%、單檔上限」相對全市場等權的結構差異。\n")
     L.append("**歸因表的讀法**：(4) 衛星在 8 組裡一致是 −6 到 −10pp；其餘各項多在 ±1pp 內。(6a) 再平衡與 (6b) 時間差在不同組合間忽正忽負（±2pp），"

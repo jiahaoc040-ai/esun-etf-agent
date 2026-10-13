@@ -48,3 +48,10 @@ def test_real_data_events_match_known_splits():
     for (d, t) in got:
         assert abs(r.loc[d, t]) <= 0.11          # 還原後不再有跳空
     assert panel.close.loc["2026-09-02", "6669"] < 3000  # 原始價仍是未還原
+
+
+def test_stock_dividend_ex_rights_not_treated_as_split():
+    """除權（配股 10%）當天股價下調約 9%：不是分割，不調整股數／不還原（配股期末才由主辦方加回）。"""
+    c = close_frame({"A": [110.0, 100.0, 101.0]})
+    assert pr.detect_splits(c) == []
+    assert (c * pr.adjustment_factors(c, [])).equals(c)

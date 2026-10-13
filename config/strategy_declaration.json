@@ -1,7 +1,7 @@
 {
- "version": "2.0.0",
+ "version": "2.1.0",
  "status": "final",
- "status_note": "策略改版（v2.0.0）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
+ "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
  "etf": {
   "name": "主動台灣核心優選 AI",
   "name_status": "final",
@@ -10,16 +10,16 @@
  },
  "theme": {
   "title": "AI Agent 依公開事件集中持有 10 至 12 檔高信心台股，追求明顯偏離大盤的超額報酬",
-  "summary": "每日由程式從 150 檔篩出約 30 檔候選（投信 5／10 日淨買超、20 日相對強度、成交值放大，並對主動型 ETF 重疊扣分），AI Agent 閱讀月營收、財報、法說會、投信連買與重大訊息後挑出 10–12 檔高信心股票並給信心等級，程式換算為 9%／6% 的集中部位；其餘以市值前 30 大小額湊足持股檔數。"
+  "summary": "每日由程式從 150 檔篩出約 30 檔候選（投信 5／10 日淨買超、20 日相對強度、成交值放大，並對主動型 ETF 重疊扣分），AI Agent 閱讀月營收、財報、法說會、投信連買與重大訊息後挑出 10–12 檔高信心股票並給信心等級，程式換算為 8%／5.5% 的集中部位；其餘以市值前 30 大小額湊足持股檔數。"
  },
  "philosophy": [
-  "超額報酬來自集中：只有 10–12 檔高信心部位，每檔 6%–9%，刻意與市值加權大盤拉開距離；不追求貼近指數。",
+  "超額報酬來自集中：只有 10–12 檔高信心部位，每檔 5.5%–8%，刻意與市值加權大盤拉開距離；不追求貼近指數。",
   "每一檔高信心部位都必須引用至少一則具名公開資訊（月營收、財報、法說會、投信連續買超、重大訊息），並說明為何是高或中信心；候選分數只負責排序，不是買進理由。",
   "Agent 只決定「哪幾檔、信心高或中」，權重由程式依信心等級換算、股數由官方公式推導，所有風控（單檔上限、持股檔數、現金、Active Share）由程式檢查。",
-  "紀律化換股：持有至少 3 個交易日、每日最多換 4 檔、成本下跌超過 12% 且無新正面事件即出場、美國高波動事件前一交易日不新增部位。",
+  "紀律化換股：沒有新證據就續抱（仍在候選前 30 名者預設續抱）、持有至少 3 個交易日、每日最多換 4 檔、成本下跌超過 12% 且無新正面事件即出場、美國高波動事件前一交易日不新增部位。",
   "與主動型 ETF 前 15 大持股保持差異：候選分數對重疊扣分，Active Share 內部目標 ≥ 20%（官方門檻 15%）。"
  ],
- "philosophy_statement": "本 ETF 由 AI Agent 依公開事件集中投資台股。程式每日以投信買超、相對強度與成交值放大篩出約 30 檔候選，並對主動型 ETF 重押的股票扣分；Agent 閱讀月營收、財報、法說會、投信連買與重大訊息，挑出 10 至 12 檔高信心股票，高信心配置 9%、中信心 6%，其餘以大型權值股小額湊足持股。每檔都須引用具名資訊；持有至少 3 日、每日最多換 4 檔、跌逾 12% 無新利多即停損，重大美國事件前一日不加碼，以紀律追求明顯偏離大盤的超額報酬。",
+ "philosophy_statement": "本 ETF 由 AI Agent 依公開事件集中投資台股。程式每日以投信買超、相對強度與成交值放大篩出約 30 檔候選，並對主動型 ETF 重押的股票扣分；Agent 閱讀月營收、財報、法說會、投信連買與重大訊息，挑出 10 至 12 檔高信心股票，高信心配置 8%、中信心 5.5%，其餘以大型權值股小額湊足持股。每檔都須引用具名資訊；持有至少 3 日、每日最多換 4 檔、跌逾 12% 無新利多即停損，重大美國事件前一日不加碼，以紀律追求明顯偏離大盤的超額報酬。",
  "benchmark": {
   "name": "市值加權上限基準 (b)",
   "definition": "投資範圍 150 檔中前一日有市值者，以市值（還原收盤價 × 發行股數）加權，2330 ≤ 20%、其他個股 ≤ 8%（超額按市值比例重分配），每日再平衡、不計成本。用於衡量集中策略的超額報酬；本 ETF 不追蹤此基準。",
@@ -28,11 +28,11 @@
  "portfolio_rules": {
   "n_conv_min": 10,
   "n_conv_max": 12,
-  "w_high": 0.09,
-  "w_mid": 0.06,
+  "w_high": 0.08,
+  "w_mid": 0.055,
   "w_tsmc_high": 0.15,
   "w_tsmc_mid": 0.1,
-  "cap_other": 0.09,
+  "cap_other": 0.08,
   "cap_tsmc": 0.2,
   "conv_floor": 0.03,
   "filler_pool": 30,
@@ -47,6 +47,7 @@
   "ap_trigger": 0.17,
   "ap_recovery_target": 0.25,
   "min_hold_days": 3,
+  "keep_rank": 30,
   "max_swaps": 4,
   "stop_loss": 0.12,
   "band": 0.015,
@@ -77,8 +78,8 @@
  "selection": {
   "format": "picks：[{ticker, conviction: high|medium, basis, obs_ids, logic, counter_evidence, confidence}]，每天列出完整 10–12 檔；exits：[{ticker, obs_ids, logic}] 主動移出者的理由",
   "conviction_levels": {
-   "high": "高信心：配置 9%（2330 為 15%）",
-   "medium": "中信心：配置 6%（2330 為 10%）"
+   "high": "高信心：配置 8%（2330 為 15%）",
+   "medium": "中信心：配置 5.5%（2330 為 10%）"
   },
   "allowed_bases": [
    {
@@ -161,12 +162,13 @@
   "max_swaps": "每日最多新增 4 檔、主動移出 4 檔（首次建倉不受限；停損出場不計入）",
   "stop_loss": "還原價相對成本（進場日成交均價）下跌超過 12%，且當日沒有新的正面事件 → 出場",
   "event_blackout": "FOMC 利率決議、NVIDIA 財報、美國大選（config/event_calendar.json）的前一交易日：不新增部位、不升級，既有部位凍結（停損與漂移保護照常）",
-  "state": "runs/state/conviction.json"
+  "state": "runs/state/conviction.json",
+  "keep_rank": "遲滯：已持有且仍在候選池前 30 名者預設續抱；要移出必須在 exits 引用該股今日的依據事實（財報、法說會、月營收、投信、重大訊息），候選分數或股價變動不構成移出理由"
  },
  "fallback": {
   "name": "合規基準 A",
   "when": "Agent 連續 3 次輸出未通過檢查時：若已有高信心名單 → 凍結（沿用現有部位，只做停損與漂移保護）；若尚無名單或凍結也不合規 → 改用合規基準 A（舊版正式策略，零 tilt）",
-  "definition": "投資範圍內『有當日價格且 20 日均成交值 ≥ 2 億』的股票，以市值（還原收盤價 × 發行股數）加權，2330 權重上限 20%、其他個股上限 8%（超額按市值比例重分配）；取權重最大的前 28 檔重新歸一；現金 3%；再以最小調整法（只動 1–3 檔重疊最大的標的，減下的權重分給第 11–28 名）把 Active Share 補到 ≥ 27%。",
+  "definition": "投資範圍內『有當日價格且 20 日均成交值 ≥ 2 億』的股票，以市值（還原收盤價 × 發行股數）加權，2330 權重上限 20%、其他個股上限 8%（超額按市值比例重分配）；取權重最大的前 28 檔重新歸一；現金 3%；再以最小調整法（只動 1–3 檔重疊最大的標的，減下的權重分給第 16–28 名）把 Active Share 補到 ≥ 22%（官方門檻 15%，前 15 大口徑）。",
   "code": "esun_agent.strategy.final.FinalStrategy.decide",
   "portfolio_rules": {
    "n_base": 28,
@@ -181,14 +183,14 @@
    "max_active": 0.15,
    "min_hold": 20,
    "max_hold": 29,
-   "ap_target": 0.27,
+   "ap_target": 0.22,
    "band": 0.02,
    "rebalance_every": 5,
    "min_adv": 200000000.0,
    "guard_tsmc": 0.24,
    "guard_other": 0.09,
-   "ap_trigger": 0.22,
-   "ap_recovery_target": 0.34
+   "ap_trigger": 0.17,
+   "ap_recovery_target": 0.29
   },
   "tilt_limits": {
    "per_name_abs_delta": 0.03,

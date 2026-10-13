@@ -10,13 +10,14 @@ from esun_agent.strategy.declaration import load_declaration
 
 SUMMARY = {
     "first": "2025-04-01", "oos_start": "2026-08-01", "length": 24, "step": 2, "universe_dates": ["2025-01-02", "2026-10-05"],
-    "strict": {"n": 171, "excess": {"n": 171, "mean": -0.012, "p5": -0.133, "p95": 0.089, "p_gt_5": 0.19, "p_gt_10": 0.04, "p_lt_m10": 0.12},
+    "etf_data_dates": ["2026-10-07", "2026-10-08"],
+    "default": {"n": 171, "excess": {"n": 171, "mean": -0.012, "p5": -0.133, "p95": 0.089, "p_gt_5": 0.19, "p_gt_10": 0.04, "p_lt_m10": 0.12},
         "mdd": {"mean": -0.073}, "turnover": {"mean": 3.2}, "cost": {"mean": 0.018}, "sum_v_holdings": 0, "sum_v_cash": 0,
         "sum_ap_fail_days": 0, "sum_drift_days": 82},
-    "strict_oos": {"n": 11, "excess": {"n": 11, "mean": -0.112, "p5": -0.2, "p95": -0.05, "p_gt_5": 0.0, "p_gt_10": 0.0, "p_lt_m10": 0.64},
+    "default_oos": {"n": 11, "excess": {"n": 11, "mean": -0.112, "p5": -0.2, "p95": -0.05, "p_gt_5": 0.0, "p_gt_10": 0.0, "p_lt_m10": 0.64},
         "mdd": {"mean": -0.09}, "turnover": {"mean": 3.2}, "cost": {"mean": 0.018}, "sum_v_holdings": 0, "sum_v_cash": 0,
         "sum_ap_fail_days": 0, "sum_drift_days": 82},
-    "hysteresis": {"n": 171, "excess": {"n": 171, "mean": 0.004, "p5": -0.12, "p95": 0.13, "p_gt_5": 0.26, "p_gt_10": 0.13, "p_lt_m10": 0.09},
+    "strict": {"n": 171, "excess": {"n": 171, "mean": 0.004, "p5": -0.12, "p95": 0.13, "p_gt_5": 0.26, "p_gt_10": 0.13, "p_lt_m10": 0.09},
         "mdd": {"mean": -0.06}, "turnover": {"mean": 3.2}, "cost": {"mean": 0.018}, "sum_v_holdings": 0, "sum_v_cash": 0,
         "sum_ap_fail_days": 0, "sum_drift_days": 82},
     "tsmc_fixed": {"n": 171, "excess": {"n": 171, "mean": -0.013, "p5": -0.13, "p95": 0.09, "p_gt_5": 0.13, "p_gt_10": 0.04, "p_lt_m10": 0.12},
@@ -78,10 +79,11 @@ def test_supplement_content_and_numbers(tmp_path):
         assert h in t
     r = decl["portfolio_rules"]
     # 規則數字來自宣告檔
-    for x in (r["w_high"], r["w_mid"], r["cap_tsmc"], r["ap_target"], r["ap_recovery_target"], r["cash_high"]):
+    for x in (r["w_high"], r["cap_tsmc"], r["ap_target"], r["ap_recovery_target"], r["cash_high"]):
         assert f"{x * 100:.0f}%" in t, x
+    assert "5.5%" in t and "續抱" in t
     assert f"{r['n_conv_min']}–{r['n_conv_max']} 檔" in t and f"{r['n_total_min']}–{r['n_total_max']} 檔" in t
-    for k in ("min_hold_days", "max_swaps", "stop_loss", "event_blackout"):
+    for k in ("keep_rank", "min_hold_days", "max_swaps", "stop_loss", "event_blackout"):
         assert decl["discipline"][k] in t
     for b in decl["selection"]["allowed_bases"]:
         assert b["label"] in t
@@ -89,7 +91,7 @@ def test_supplement_content_and_numbers(tmp_path):
             assert a in t
     assert decl["fallback"]["name"] in t and "凍結" in t
     # 回測數字來自摘要，不是寫死
-    for s_ in ("19%", "4%", "12%", "-13.3%", "+8.9%", "2026-08-01", "-11.2%", "24 個交易日"):
+    for s_ in ("19%", "4%", "12%", "-13.3%", "+8.9%", "2026-08-01", "-11.2%", "24 個交易日", "2026-10-07"):
         assert s_ in t, s_
     assert "前視與倖存者偏誤" in t and "不證明 Agent" in t                      # 名單偏誤與限制必須寫明
     assert "連續 2 日" in t and "FOMC" in t
@@ -143,7 +145,7 @@ def test_real_summary_file_builds_when_present(tmp_path):
         pytest.skip("尚未產生 docs/conviction_backtest.json")
     S = sd.load_summary()
     d = docx.Document(str(sd.build_strategy_doc(tmp_path / "real.docx", summary=S)))
-    assert pct_in(S["strict"]["excess"]["p5"], texts(d)) and pct_in(S["strict_oos"]["excess"]["mean"], texts(d))
+    assert pct_in(S["default"]["excess"]["p5"], texts(d)) and pct_in(S["default_oos"]["excess"]["mean"], texts(d))
 
 
 def pct_in(x, t):

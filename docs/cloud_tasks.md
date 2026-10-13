@@ -1,5 +1,15 @@
 # 雲端工作階段任務清單
 
+> **規則更新（比賽辦法 1005 版，取代舊版）**：Active Share 改為我方前 15 大 vs 各主動型 ETF 前 15 大、< 15% 才違規；現金「不超過」25%；
+> 除息現金與除權配股都不在除權息日入帳（期末由主辦方一次加回）；首次繳交 2026/10/26 19:30 ～ 10/27 08:55。
+> 以下 T1–T6 為原始任務提示（保留歷史），已依新規則實作的部分見 CLAUDE.md。
+
+## 1005 版規則後的狀態
+
+- ETF 持股已改用 MoneyDJ Basic0007B 真實前 15 大（`data/etf_top15/2026-10-11.json`，27 檔；3 檔純海外型跳過），真實頁面 fixture 在 `tests/fixtures/etf/real/moneydj_all_*.html`。
+- Active Share 參數已用真實前 15 大重新校準（`docs/active_share_calibration.md`）。**正式開跑前每日要重抓 ETF 持股**（`scripts/fetch_etf_holdings.py`），
+  並在開賽前再重跑一次 `scripts/calibrate_active_share.py` 確認參數仍成立（改參數＝改版，換 code_version，並同步 `config/strategy_declaration.json`）。
+
 每個任務各開一個雲端工作階段（claude.ai/code → 選這個 repo），把「Prompt」整段貼上即可。
 做完先 review PR、merge，再開下一個。依序做：T1 → T2 → T4 → T3 → T5，T6 最晚 10/20 前完成。
 
@@ -19,11 +29,11 @@
 6. 加上三大法人買賣超（TWSE `fund/T86`、TPEx 對應 API）。
 連不到網路時，用 fixture 假資料把 parser 和測試寫完。所有測試必須全綠。
 
-## T2 主動型 ETF 前 10 大持股（Active Share 用）
+## T2 主動型 ETF 持股（Active Share 用；1005 版辦法起改為前 15 大）
 
 **Prompt：**
 先讀 CLAUDE.md。`data/reference/active_etfs.csv` 有 30 檔主動型 ETF。實作 `esun_agent/data/etf_holdings.py`：
-從各投信官網或 TWSE ETF 資訊揭露頁抓每檔 ETF 的前 10 大持股與權重，存成 `data/etf_top10/YYYY-MM-DD.json`，格式為 `{etf_code: {ticker: weight}}`。
+從各投信官網或 TWSE ETF 資訊揭露頁抓每檔 ETF 的持股與權重（原為前 10 大；1005 版辦法改為取前 15 大，來源改為 MoneyDJ 全部持股頁 Basic0007B），存成 `data/etf_top15/YYYY-MM-DD.json`，格式為 `{etf_code: {ticker: weight}}`。
 海外型 ETF（例如投資美國科技的 00989A、00402A）持股和台股沒有交集，可以標記並跳過。
 抓不到的 ETF 要列出清單，並提供一個 CSV 模板讓我手動補資料。
 最後串接 `esun_agent.active_share.check_active_share`，寫一個函式：輸入擬定的目標權重，回傳是否通過；若不通過，指出哪幾檔權重需要調整。

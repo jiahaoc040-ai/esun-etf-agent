@@ -69,7 +69,7 @@ class Sim:
         i = panel.dates.index(trade_date)
         D = panel.dates[i - 1]
         ctx = DayContext(team_id=self.team, trade_date=trade_date, prev_date=D, panel=panel, factors=self.env["factors"],
-                         caps=self.env["caps"], top10=self.env["top10"], prev_nav=self.nav, cash=self.ledger.cash,
+                         caps=self.env["caps"], top15=self.env["top15"], prev_nav=self.nav, cash=self.ledger.cash,
                          holdings=dict(self.ledger.holdings), inputs=load_inputs(trade_date))
         state = TiltState.load(self.state_path)
         res = assemble_day(ctx, llm, state, **kw)
@@ -92,7 +92,8 @@ def prompt_candidates(user: str) -> list[str]:
     return re.findall(r"^- 第 \d+ 名 (\d{4})", user, re.M)
 
 
-def conviction_llm(n=11, n_high=5, drop=(), extra=(), keep_levels=True, regime="neutral", stance="neutral"):
+def conviction_llm(n=11, n_high=5, drop=(), extra=(), keep_levels=True, regime="neutral", stance="neutral",
+                   exit_with_fact=True):
     """依 prompt 自動產生合規的 picks：先續抱目前名單（drop 內的改列 exits），再依候選名次補到 n 檔（需有 trust_flow 證據）。
     extra：額外硬塞進 picks 的 (ticker, level)（用來製造違規）。"""
     def gen(system, user):
@@ -106,7 +107,8 @@ def conviction_llm(n=11, n_high=5, drop=(), extra=(), keep_levels=True, regime="
         picks, exits = [], []
         for t, lv in prompt_current_picks(user):
             if t in drop:
-                exits.append({"ticker": t, "obs_ids": [pos[t]], "logic": "投信買超轉弱、事件利多已反映於股價，移出高信心名單換入新證據更強的標的。"})
+                ids = ([trust[t]] if exit_with_fact and t in trust else []) + [pos[t]]
+                exits.append({"ticker": t, "obs_ids": ids, "logic": "投信買超轉弱、事件利多已反映於股價，移出高信心名單換入新證據更強的標的。"})
                 continue
             ids = [trust[t]] if t in trust else carried.get(t, [])[:1]
             picks.append({"ticker": t, "conviction": lv if keep_levels else "medium", "basis": "trust_flow", "obs_ids": ids,
@@ -141,7 +143,7 @@ class ConvSim(Sim):
         panel = self.env["panel"]
         i = panel.dates.index(trade_date)
         ctx = DayContext(team_id=self.team, trade_date=trade_date, prev_date=panel.dates[i - 1], panel=panel,
-                         factors=self.env["factors"], caps=self.env["caps"], top10=self.env["top10"], prev_nav=self.nav,
+                         factors=self.env["factors"], caps=self.env["caps"], top15=self.env["top15"], prev_nav=self.nav,
                          cash=self.ledger.cash, holdings=dict(self.ledger.holdings), inputs=load_inputs(trade_date))
         kw.setdefault("events", [])
         res = assemble_conviction_day(ctx, llm, ConvictionState.load(self.state_path), **kw)

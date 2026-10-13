@@ -217,8 +217,8 @@ def check_orders(doc: dict, ctx: dict, rep: Report):
         rep.err("C11", f"委託後持股 {len(post)} 檔，不在 {MIN_HOLDINGS}–{MAX_HOLDINGS} 檔")
     if cash_after < 0:
         rep.err("C9", f"預估委託後現金為負 {cash_after:,.0f}")
-    elif cash_pct >= CASH_MAX:
-        rep.err("C9", f"預估委託後現金比 {cash_pct:.2%} ≥ 25%")
+    elif cash_pct > CASH_MAX:
+        rep.err("C9", f"預估委託後現金比 {cash_pct:.2%} > 25%")
     no_px = sorted(set(post) - set(close))
     if no_px:
         rep.warn("CTX", f"缺少持股收盤價，無法檢查權重：{no_px}")

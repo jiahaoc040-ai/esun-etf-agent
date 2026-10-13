@@ -118,7 +118,7 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
             for t, p in held_picks.items()}
     stop = stop_loss_names(held, P)
     blk = blackout_events(T, events)
-    cands = screen(fdf, ctx.top10, C, held=set(held_picks))
+    cands = screen(fdf, ctx.top15, C, held=set(held_picks))
     ev = build_evidence(ctx.panel, D, inputs=ctx.inputs, carried={t: p.evidence for t, p in held_picks.items()},
                         fetched_at=ctx.fetched_at, declaration=decl)
     b = EvidenceBuilder(ctx.fetched_at, ev)
@@ -126,8 +126,8 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
     pos_obs = {t: position_observation(b, D, t, held_picks[t].since, held[t].ret, held[t].days_held, held[t].level)
                for t in held_picks}
     blk_obs = blackout_observation(b, blk, D, T) if blk else None
-    cur_ap = (check_target_weights(cur_w, ctx.top10, margin=0.0, expected_etfs=list(ctx.top10))["min"]
-              if ctx.top10 and cur_w else None)
+    cur_ap = (check_target_weights(cur_w, ctx.top15, margin=0.0, expected_etfs=list(ctx.top15))["min"]
+              if ctx.top15 and cur_w else None)
     ap_target = P.ap_recovery_target if cur_ap is not None and cur_ap < ACTIVE_SHARE_MIN else P.ap_target
     forced = cur_ap is not None and cur_ap < P.ap_trigger
     notes = (["ap_recovery"] if ap_target != P.ap_target else []) + (["ap_forced_rebalance"] if forced else [])
@@ -149,8 +149,9 @@ def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, 
     bases = "\n".join(f"- {b['id']}（{b['label']}）：來源 authority 須為 {'／'.join(b['authority'])}" for b in allowed_bases(decl))
     system = _render((PROMPT_DIR / SYSTEM_PROMPT).read_text(encoding="utf-8"), etf_name=decl["etf"]["name"],
                      allowed_bases=bases, n_min=P.n_conv_min, n_max=P.n_conv_max, w_high=f"{P.w_high:.0%}",
-                     w_mid=f"{P.w_mid:.0%}", w_tsmc_high=f"{P.w_tsmc_high:.0%}", w_tsmc_mid=f"{P.w_tsmc_mid:.0%}",
-                     min_hold_days=P.min_hold_days, max_swaps=P.max_swaps, stop_loss=f"{P.stop_loss:.0%}")
+                     w_mid=f"{P.w_mid:.1%}", w_tsmc_high=f"{P.w_tsmc_high:.0%}", w_tsmc_mid=f"{P.w_tsmc_mid:.0%}",
+                     min_hold_days=P.min_hold_days, max_swaps=P.max_swaps, stop_loss=f"{P.stop_loss:.0%}",
+                     keep_rank=P.keep_rank)
     cur = []
     for t, p in prep.held_picks.items():
         h = prep.held[t]
@@ -158,6 +159,9 @@ def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, 
         line = (f"- {t} {_name(t)}：{LEVEL_LABELS[p.level]}信心（{p.level}），自 {p.since} 起，已持有 {h.days_held} 個交易日"
                 f"（{'可移出／可降級' if ok else '未滿 3 日，不可移出或降級'}）；"
                 + (f"相對成本 {h.ret * 100:+.1f}%；" if h.ret is not None else "")
+                + (f"候選名次 {int(prep.cands.at[t, 'rank'])}（≤ {P.keep_rank}：預設續抱）；"
+                   if t in prep.cands.index and prep.cands.at[t, "rank"] <= P.keep_rank else
+                   f"已跌出候選前 {P.keep_rank} 名；")
                 + f"原依據 {BASIS_LABELS.get(p.basis, p.basis)}；原證據 obs_id：{prep.ev.carried_ids.get(t, [])}；"
                 f"部位 obs_id：{prep.pos_obs[t]}")
         if t in prep.stop:
@@ -236,7 +240,14 @@ def check_picks(prop: PicksProposal, ctx: DayContext, prep: Prep, state: Convict
     for t in prep.held_picks:
         if t not in picked and t not in stop and t not in exits:
             errs.append(f"{t} 目前在高信心名單但不在 picks：請在 exits 寫出移出理由（引用 obs_id），或把它留在 picks")
+    ranks = prep.cands["rank"].to_dict()
     for t, x in exits.items():
+        if t in prep.held_picks and t in ranks and ranks[t] <= P.keep_rank:      # 遲滯：仍在前 30 名 → 要有新的依據事實才可移出
+            fresh_ids = [r for r in x.obs_ids if r in ids and ev.meta[r].get("ticker") == t and ev.meta[r].get("basis")
+                         and not ev.meta[r]["carried"]]
+            if not fresh_ids:
+                errs.append(f"exits {t}：候選名次 {int(ranks[t])} ≤ {P.keep_rank}，預設續抱；要移出必須引用該股今日的依據事實"
+                            "（財報、法說會、月營收、投信、重大訊息的 observation），候選分數、股價或部位損益不構成移出理由")
         if t not in prep.held_picks:
             errs.append(f"exits {t}：不在目前高信心名單")
         bad = [r for r in x.obs_ids if r not in ids]
@@ -350,7 +361,7 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
                           "既有部位凍結，只做停損與漂移保護。", "事件前一交易日：不新增部位")
     rebalance_inf = notrade_inf = None
     if decisions:
-        why = {"llm": "依今日高信心名單與信心等級換算目標權重（高 9%、中 6%，2330 高 15%、中 10%）",
+        why = {"llm": "依今日高信心名單與信心等級換算目標權重（高 8%、中 5.5%，2330 高 15%、中 10%）",
                "hold": "降級凍結：沿用現有部位，只處理停損與漂移保護",
                "base": "降級保底：改用合規基準 A 的目標權重"}[mode]
         rebalance_inf = add_inf([dev_obs], f"{why}；與現權重比較，新增、移出或偏離超過無交易帶 {P_band:.1%} 者才調整；"
@@ -422,10 +433,10 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
 
 # ----------------------------------------------------------------------------- 主流程
 
-def _targets(prep: Prep, res_weights: dict[str, float], P: ConvictionParams, top10, mode: str) -> tuple[dict, list[str]]:
+def _targets(prep: Prep, res_weights: dict[str, float], P: ConvictionParams, top15, mode: str) -> tuple[dict, list[str]]:
     target, notes = dict(res_weights), []
     if mode != "base" and not prep.forced and not guard_triggered(prep.cur_w, P):
-        target, notes = apply_band(target, prep.cur_w, P, top10, prep.ap_target)
+        target, notes = apply_band(target, prep.cur_w, P, top15, prep.ap_target)
     return target, notes
 
 
@@ -445,7 +456,7 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
     feedback: list[str] = []
 
     def finish(mode, prop, levels, weights, fillers, stop_exits, base_note=""):
-        target, bnotes = _targets(prep, weights, P, ctx.top10, mode)
+        target, bnotes = _targets(prep, weights, P, ctx.top15, mode)
         plan = plan_orders(target, prep.nav, prep.cash, prep.close, prep.holdings,
                            buy_buffer=BUY_BUFFER if mode != "base" else 0.0)
         kw = dict(mode=mode, prop=prop, levels=levels, target=target, fillers=fillers, plan=plan, usage=usage,
@@ -485,7 +496,7 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
             continue
         levels = dict(prop.levels())
         stop_exits = (prep.stop - new_pos) & set(prep.held_picks)
-        built = build_portfolio(levels, prep.cap, prep.elig, ctx.top10, P, current_fillers=state.fillers,
+        built = build_portfolio(levels, prep.cap, prep.elig, ctx.top15, P, current_fillers=state.fillers,
                                 ap_target=prep.ap_target, current=prep.cur_w,
                                 no_new=bool(prep.blackout) and bool(prep.cur_w),
                                 exits=[t for t in prep.held_picks if t not in levels])
@@ -503,7 +514,7 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
     notes = list(prep.notes)
     if prep.held_picks:
         levels = {t: p.level for t, p in prep.held_picks.items() if t not in prep.stop}
-        built = build_portfolio(levels, prep.cap, prep.elig, ctx.top10, P, current_fillers=state.fillers,
+        built = build_portfolio(levels, prep.cap, prep.elig, ctx.top15, P, current_fillers=state.fillers,
                                 ap_target=prep.ap_target, current=prep.cur_w, no_new=True, exits=sorted(prep.stop))
         if not built.errors:
             doc, errs, rep, plan, bnotes = finish("hold", None, levels, built.weights, built.fillers,
@@ -516,7 +527,7 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
         else:
             notes.append("fallback_hold_failed:" + "；".join(built.errors)[:300])
     # --- 降級 2：合規基準 A（舊版正式策略，零 tilt）
-    r = ctx.strategy.decide(prep.fdf, prep.cap, prep.cur_w, ctx.top10, None)
+    r = ctx.strategy.decide(prep.fdf, prep.cap, prep.cur_w, ctx.top15, None)
     doc, errs, rep, plan, _ = finish("base", None, {}, r.weights, [], set())
     if errs:
         raise AssembleError("保底 D-Plan 也未通過驗證：\n" + "\n".join(errs))

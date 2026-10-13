@@ -2,7 +2,7 @@
 
 每日流程與實盤相同（只差選股者）：
   D 日收盤後：候選池 screen → 代理選股 proxy_picks（前 11 名，前 5 名「高」、其餘「中」）→ 換股紀律 discipline（修正模式：
-  持有 < 3 日不賣、每日最多換 4 檔、停損 −12%、高波動事件前一日不新增）→ build_portfolio（高 9%／中 6%、湊檔股、現金、
+  持有 < 3 日不賣、每日最多換 4 檔、停損 −12%、高波動事件前一日不新增）→ build_portfolio（高 8%／中 5.5%、湊檔股、現金、
   Active Share）→ 無交易帶 apply_band → plan_orders（同實盤：委託後現金比 ≥ 2%，不足時等比例縮減買進）→ derive_orders。
   T 日以成交均價成交、扣費稅；以收盤價估值。時序、分割處理與 backtest.run_backtest 相同。
 代理沒有「新的正面事件」可引用，所以停損一律出場。
@@ -31,7 +31,7 @@ from .strategy.factors import MIN_HISTORY, factors_on
 class ProxyParams:
     n_picks: int = 11
     n_high: int = 5
-    keep_rank: int | None = None          # 遲滯：已持有且候選分數名次 ≤ keep_rank 者優先保留（None = 嚴格取前 n 名）
+    keep_rank: int | None = 30            # 遲滯（預設）：已持有且候選分數名次 ≤ keep_rank 者優先保留（None = 嚴格取前 n 名）
     fixed: tuple = ()                     # 敏感度：固定列入的 (ticker, level)，例如 (("2330", "high"),)
     sticky_levels: bool = True            # 已持有者沿用原信心等級（代理不因名次在第 5／6 名間跳動就每天升降級）
 
@@ -87,7 +87,7 @@ def _proposal(cands: pd.DataFrame, held: dict, pp: ProxyParams) -> list[tuple[st
 
 
 def run_conviction_backtest(panel: Panel, factors: dict[str, pd.DataFrame], caps: pd.DataFrame,
-                            top10: dict | None, start: str | None = None, end: str | None = None, *,
+                            top15: dict | None, start: str | None = None, end: str | None = None, *,
                             params: ConvictionParams | None = None, cand_params: CandidateParams | None = None,
                             proxy: ProxyParams | None = None, events: list[dict] | None = None,
                             capital: float = INITIAL_CAPITAL, cost_free: bool = False) -> ConvictionBacktest:
@@ -121,15 +121,15 @@ def run_conviction_backtest(panel: Panel, factors: dict[str, pd.DataFrame], caps
                 for t, v in picks.items() if t in led.holdings}
         nxt = dates[i + 1] if i + 1 < len(dates) else None
         blk = bool(blackout_events(T, events, nxt)) if events is not None else bool(blackout_events(T, None, nxt))
-        cands = screen(fdf, top10, cand_params, held=set(held))
+        cands = screen(fdf, top15, cand_params, held=set(held))
         prop = _proposal(cands, {t: picks[t] for t in held}, pp)
         final, _, dnotes = discipline(prop, held, cp, blackout=blk, strict=False, eligible=elig)
 
-        cur_ap = (check_target_weights(cur_w, top10, margin=0.0, expected_etfs=list(top10))["min"]
-                  if top10 and cur_w else None)
+        cur_ap = (check_target_weights(cur_w, top15, margin=0.0, expected_etfs=list(top15))["min"]
+                  if top15 and cur_w else None)
         ap_target = cp.ap_recovery_target if cur_ap is not None and cur_ap < ACTIVE_SHARE_MIN else cp.ap_target
         forced = cur_ap is not None and cur_ap < cp.ap_trigger
-        res = build_portfolio(final, cap, elig, top10, cp, current_fillers=fillers, ap_target=ap_target,
+        res = build_portfolio(final, cap, elig, top15, cp, current_fillers=fillers, ap_target=ap_target,
                               current=cur_w, no_new=blk and bool(cur_w),
                               exits=[t for t in held if t not in final])
         orders = []
@@ -140,7 +140,7 @@ def run_conviction_backtest(panel: Panel, factors: dict[str, pd.DataFrame], caps
         else:
             target = res.weights
             if not forced and not guard_triggered(cur_w, cp):
-                target, _ = apply_band(target, cur_w, cp, top10, ap_target)
+                target, _ = apply_band(target, cur_w, cp, top15, ap_target)
             plan = plan_orders(target, prev_nav, led.cash, last_close, dict(led.holdings), buy_buffer=BUY_BUFFER)
             orders = plan.orders
         n_stop = sum(1 for n in dnotes if n.startswith("stop_loss"))
@@ -174,8 +174,8 @@ def run_conviction_backtest(panel: Panel, factors: dict[str, pd.DataFrame], caps
         w = {t: n * last_close[t] / nav for t, n in led.holdings.items()}
         cash_ratio = led.cash / nav
         ap_min = float("nan")
-        if top10 and w:
-            ap_min = float(check_target_weights(w, top10, margin=0.0, expected_etfs=list(top10))["min"])
+        if top15 and w:
+            ap_min = float(check_target_weights(w, top15, margin=0.0, expected_etfs=list(top15))["min"])
         rows.append({"date": T, "nav": nav, "cash_ratio": cash_ratio, "n_hold": len(w),
                      "n_conv": sum(1 for t in picks if t in w), "max_w": max(w.values()) if w else 0.0,
                      "turnover": traded / 2 / prev_nav, "fee": cost["fee"], "tax": cost["tax"], "n_orders": len(fills),

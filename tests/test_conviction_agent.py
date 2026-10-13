@@ -16,12 +16,12 @@ DAYS = ["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-05"]
 
 @pytest.fixture(scope="module")
 def env():
-    from esun_agent.data.etf_holdings import load_top10
+    from esun_agent.data.etf_holdings import load_top15
     from esun_agent.data.prices import load_panel
     from esun_agent.strategy.factors import compute_factors
     from esun_agent.strategy.marketcap import market_cap
     panel = load_panel()
-    return {"panel": panel, "factors": compute_factors(panel), "top10": load_top10(), "caps": market_cap(panel)[0]}
+    return {"panel": panel, "factors": compute_factors(panel), "top15": load_top15(), "caps": market_cap(panel)[0]}
 
 
 def check_day(sim, r, T, held_before):
@@ -71,7 +71,7 @@ def test_five_day_simulation_zero_errors_and_rules(env, tmp_path):
         assert r.mode == "llm" and len(r.attempts) == 1, (T, r.attempts)
         w = check_day(sim, r, T, before)
         assert 10 <= len(r.state.picks) <= 12 and 21 <= len(w) <= 24
-        assert max(x for t, x in w.items() if t != "2330") < 0.10
+        assert max(x for t, x in w.items() if t != "2330") < 0.095
     d1 = res[DAYS[0]]
     assert d1.doc["market_view"]["posture"]["net_exposure_intent"] == "increase" and d1.doc["no_trade_decisions"] == []
     picks = d1.state.picks
@@ -80,7 +80,7 @@ def test_five_day_simulation_zero_errors_and_rules(env, tmp_path):
     lv = {t: p.level for t, p in picks.items()}
     for t, x in tw.items():                                         # 權重由信心等級換算
         if t in lv and t != "2330":
-            assert x == pytest.approx(0.09 if lv[t] == "high" else 0.06, abs=0.012)
+            assert x == pytest.approx(0.08 if lv[t] == "high" else 0.055, abs=0.012)
     # 每檔高信心部位的推論引用到該股的 trust_flow 事實
     obs = {o["obs_id"]: o for o in d1.doc["observations"]}
     for d in d1.doc["decisions"]:
@@ -113,6 +113,29 @@ def test_min_hold_and_swap_limit_are_fed_back(env, tmp_path):
     assert set(first[:4]) <= sold
     exit_inf = [i for i in r.doc["inferences"] if "移出" in (i.get("conclusion") or "")]
     assert len(exit_inf) >= 4
+
+
+def test_hysteresis_exit_requires_new_fact(env, tmp_path):
+    """仍在候選前 30 名的持股：只引用部位損益（沒有該股今日的依據事實）就移出 → 退回；引用今日投信事實 → 通過。"""
+    sim = ConvSim(env, tmp_path)
+    for T in DAYS[:3]:
+        sim.day(T, FakeLLM([conviction_llm()]))
+    st = sim.results[-1].state.picks
+    ranked = []
+    def capture(system, user):
+        import re
+        ranked.extend(re.findall(r"^- (\d{4}) .*?候選名次 (\d+)（≤ 30", user, re.M))
+        return conviction_llm()(system, user)
+    sim.day(DAYS[3], FakeLLM([capture]))
+    in_zone = [t for t, _ in ranked if t in st]
+    if not in_zone:
+        pytest.skip("此資料區間沒有仍在前 30 名的持股")
+    victim = in_zone[0]
+    bad = conviction_llm(drop=(victim,), exit_with_fact=False)
+    good = conviction_llm(drop=(victim,))
+    r = sim.day(DAYS[4], FakeLLM([bad, good]))
+    assert any("預設續抱" in e for e in r.attempts[0]["errors"]), r.attempts[0]["errors"]
+    assert r.mode == "llm" and victim not in r.state.picks
 
 
 def test_evidence_must_be_a_fact_of_that_stock(env, tmp_path):
@@ -201,7 +224,8 @@ def test_prompt_lists_candidates_2330_and_versions(env, tmp_path):
     llm = FakeLLM([conviction_llm()])
     sim.day(DAYS[0], llm)
     system, user = llm.calls[0]
-    assert "高" in system and "9%" in system and "6%" in system and "{{" not in system + user
+    assert "高" in system and "8%" in system and "5.5%" in system and "{{" not in system + user
+    assert "續抱是預設值" in system and "前 30 名" in system
     cands = prompt_candidates(user)
     assert 30 <= len(cands) <= 32 and "2330" in cands
     assert prompt_current_picks(user) == []
@@ -232,7 +256,7 @@ def test_state_roundtrip(tmp_path):
 def test_real_data_proxy_window_no_violations(env):
     from esun_agent import conviction_backtest as cb
     i = env["panel"].dates.index("2026-08-03")
-    r = cb.run_conviction_backtest(env["panel"], env["factors"], env["caps"], env["top10"], env["panel"].dates[i],
+    r = cb.run_conviction_backtest(env["panel"], env["factors"], env["caps"], env["top15"], env["panel"].dates[i],
                                    env["panel"].dates[i + 23])
     assert r.violations["holdings"] == 0 and r.violations["cash"] == 0 and r.build_errors == 0
     assert (r.daily["ap_min"] >= ACTIVE_SHARE_MIN).all() and r.daily["n_hold"].between(21, 24).all()

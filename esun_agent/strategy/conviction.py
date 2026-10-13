@@ -2,7 +2,8 @@
 
 投組結構（build_portfolio）：
   高信心部位   LLM（回測時為候選池分數前 11 名）從候選池挑 10–12 檔並給信心等級：
-               高 = 9%、中 = 6%（2330：高 15%、中 10%）。單檔硬上限 9%（官方 10%，留 1% 給價格漂移），2330 上限 20%。
+               高 = 8%、中 = 5.5%（2330：高 15%、中 10%）。單檔硬上限 8%（官方 10%，留 2% 給價格漂移：買進當天漲停 +10%
+               且淨值下跌時仍不超過 10%，避免被認定為「加碼造成超限」），2330 上限 20%。
   湊檔數部位   市值前 30 大、且不在高信心名單者，取市值最大的若干檔各 1–2%，使總持股 = 20–24 檔
                （現有湊檔股仍在前 30 大者優先保留，避免無謂換手）。內部下限 21 檔：建倉當天若有一檔停牌買不到仍有 20 檔。
   現金         目標 3%，區間 2–5%。
@@ -48,11 +49,11 @@ class ConvictionError(ValueError):
 class ConvictionParams:
     n_conv_min: int = 10
     n_conv_max: int = 12
-    w_high: float = 0.09
-    w_mid: float = 0.06
+    w_high: float = 0.08
+    w_mid: float = 0.055
     w_tsmc_high: float = 0.15
     w_tsmc_mid: float = 0.10
-    cap_other: float = 0.09               # 單檔硬上限（官方 10%，留 1% 給價格漂移）
+    cap_other: float = 0.08               # 單檔硬上限（官方 10%，留 2% 給價格漂移）
     cap_tsmc: float = 0.20                # 2330（官方 25%）
     conv_floor: float = 0.03              # Active Share 修正時高信心部位最低降到這裡
     filler_pool: int = 30                 # 湊檔數部位：市值前 30 大
@@ -67,6 +68,7 @@ class ConvictionParams:
     ap_trigger: float = 0.17              # 前日收盤 Active Share < 此值 → 當日必須再平衡到 ≥ ap_target
     ap_recovery_target: float = 0.25      # 前日收盤已 < 15%（已違規一日）→ 當日補到這個更高的目標
     min_hold_days: int = 3
+    keep_rank: int = 30                   # 遲滯：已持有且候選名次 ≤ 30 者預設續抱；要移出須引用該股新的依據事實
     max_swaps: int = 4
     stop_loss: float = 0.12
     band: float = 0.015                   # 無交易帶：既有持股目標與現權重差 < 1.5% 不交易
@@ -163,15 +165,15 @@ def _ap_items(res: dict) -> list[dict]:
 
 
 def _fix_active_share(w: dict[str, float], picks: dict[str, str], fillers: list[str], spare: list[str],
-                      top10: dict, p: ConvictionParams, target: float, notes: list[str], max_iter: int = 60):
+                      top15: dict, p: ConvictionParams, target: float, notes: list[str], max_iter: int = 60):
     margin = target - ACTIVE_SHARE_MIN
-    exp = list(top10)
-    res = check_target_weights(w, top10, margin=margin, expected_etfs=exp)
+    exp = list(top15)
+    res = check_target_weights(w, top15, margin=margin, expected_etfs=exp)
     it = 0
     while (res["fails"] or res["warnings"]) and it < max_iter:
         it += 1
         item = _ap_items(res)[0]
-        etf_names = set(top10[item["etf"]])
+        etf_names = set(top15[item["etf"]])
         acted = False
         for o in item["overlap_tickers"]:
             t = o["ticker"]
@@ -206,11 +208,11 @@ def _fix_active_share(w: dict[str, float], picks: dict[str, str], fillers: list[
                 break
         if not acted:
             break
-        res = check_target_weights(w, top10, margin=margin, expected_etfs=exp)
+        res = check_target_weights(w, top15, margin=margin, expected_etfs=exp)
     return w, res
 
 
-def build_portfolio(picks: dict[str, str], cap: pd.Series, eligible: set[str], top10: dict | None,
+def build_portfolio(picks: dict[str, str], cap: pd.Series, eligible: set[str], top15: dict | None,
                     params: ConvictionParams | None = None, *, current_fillers=(), ap_target: float | None = None,
                     current: dict[str, float] | None = None, no_new: bool = False, exits=()) -> ConvictionResult:
     """picks = {ticker: "high"|"medium"}（依優先序）。cap = D 日市值。eligible = D 日有價且流動性足夠的名單。
@@ -261,12 +263,12 @@ def build_portfolio(picks: dict[str, str], cap: pd.Series, eligible: set[str], t
         w = frozen
         notes.append("no_new_positions")
     res = None
-    if top10:
+    if top15:
         target = ap_target if ap_target is not None else p.ap_target
         if no_new:
-            res = check_target_weights(w, top10, margin=0.0, expected_etfs=list(top10))
+            res = check_target_weights(w, top15, margin=0.0, expected_etfs=list(top15))
         else:
-            w, res = _fix_active_share(w, picks, fillers, spare, top10, p, target, notes)
+            w, res = _fix_active_share(w, picks, fillers, spare, top15, p, target, notes)
             if res["min"] < target - 1e-9:
                 notes.append(f"ap_target_unreached:{res['min']:.3f}")
     w = {t: x for t, x in w.items() if x > 1e-12}
@@ -299,7 +301,7 @@ def check_portfolio(w: dict[str, float], p: ConvictionParams, ap: dict | None = 
 # --------------------------------------------------------------------------- 無交易帶與再平衡判斷
 
 def apply_band(target: dict[str, float], current: dict[str, float], p: ConvictionParams,
-               top10: dict | None = None, ap_target: float | None = None) -> tuple[dict[str, float], list[str]]:
+               top15: dict | None = None, ap_target: float | None = None) -> tuple[dict[str, float], list[str]]:
     """既有持股且目標 > 0、|目標 − 現權重| < band、且現權重未超過漂移保護 → 沿用現權重（不交易），差額由現金吸收。
     沿用後現金跑出 [cash_low, cash_high] → 依偏離由大到小逐檔解除沿用，直到現金回到區間；
     Active Share 跌破目標 → 放棄無交易帶。"""
@@ -315,8 +317,8 @@ def apply_band(target: dict[str, float], current: dict[str, float], p: Convictio
         out[t] = target[t]
         cash = 1.0 - sum(out.values())
         notes = ["band_unlocked_for_cash"]
-    if top10:
-        r = check_target_weights(out, top10, margin=0.0, expected_etfs=list(top10))
+    if top15:
+        r = check_target_weights(out, top15, margin=0.0, expected_etfs=list(top15))
         if r["min"] < (ap_target if ap_target is not None else p.ap_target) - 1e-9:
             return dict(target), ["band_dropped_for_active_share"]
     return out, notes

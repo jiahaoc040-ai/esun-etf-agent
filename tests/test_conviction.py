@@ -76,11 +76,11 @@ def test_screen_respects_liquidity(syn):
 
 # ------------------------------------------------------------------ 權重換算
 def test_levels_to_weights_fillers_and_cash():
-    names = TICKERS[30:41]                                         # 11 檔：5 高 6 中 = 81%
+    names = TICKERS[30:41]                                         # 11 檔：5 高 6 中 = 73%
     r = cv.build_portfolio(picks_of(names), cap_series(), set(TICKERS), None, P)
     assert r.errors == []
-    assert all(r.weights[t] == pytest.approx(0.09) for t in names[:5])
-    assert all(r.weights[t] == pytest.approx(0.06) for t in names[5:])
+    assert all(r.weights[t] == pytest.approx(P.w_high) for t in names[:5])
+    assert all(r.weights[t] == pytest.approx(P.w_mid) for t in names[5:])
     assert P.n_total_min <= r.n_hold <= P.n_total_max and r.cash == pytest.approx(P.cash_target)
     assert r.fillers == TICKERS[:len(r.fillers)]                  # 市值最大者優先、不含高信心名單
     assert all(P.filler_min - 1e-9 <= r.weights[t] <= P.filler_max + 1e-9 for t in r.fillers)
@@ -90,15 +90,15 @@ def test_levels_to_weights_fillers_and_cash():
 def test_scaling_down_when_all_high_and_up_when_all_medium():
     hi = cv.build_portfolio(picks_of(TICKERS[30:42], n_high=12), cap_series(), set(TICKERS), None, P)
     assert hi.errors == [] and any(n.startswith("conviction_scaled") for n in hi.notes)
-    assert max(hi.conviction.values()) < 0.09 and hi.n_hold == P.n_total_min and hi.cash == pytest.approx(P.cash_target)
+    assert max(hi.conviction.values()) < P.w_high and hi.n_hold == P.n_total_min and hi.cash == pytest.approx(P.cash_target)
     lo = cv.build_portfolio(picks_of(TICKERS[30:40], n_high=0), cap_series(), set(TICKERS), None, P)
-    assert lo.errors == [] and min(lo.conviction.values()) > 0.06 and max(lo.conviction.values()) <= 0.09 + 1e-12
+    assert lo.errors == [] and min(lo.conviction.values()) > P.w_mid and max(lo.conviction.values()) <= P.cap_other + 1e-12
     assert lo.n_hold == P.n_total_max and P.cash_low <= lo.cash <= P.cash_high + 1e-9
 
 
 def test_tsmc_pick_weights_and_cap():
     r = cv.build_portfolio({"2330": "high", **picks_of(TICKERS[30:40], n_high=3)}, cap_series(), set(TICKERS), None, P)
-    assert r.errors == [] and r.weights["2330"] <= P.cap_tsmc + 1e-12 and r.weights["2330"] > 0.09
+    assert r.errors == [] and r.weights["2330"] <= P.cap_tsmc + 1e-12 and r.weights["2330"] > P.cap_other
     assert "2330" not in r.fillers
 
 
@@ -143,8 +143,13 @@ def test_no_new_freezes_current_weights_and_exits_go_to_cash():
     r = cv.build_portfolio(new, cap_series(), set(TICKERS), None, P, current=cur, no_new=True, exits=[names[0]])
     assert r.errors == [] and TICKERS[45] not in r.weights and names[0] not in r.weights
     assert all(r.weights[t] == pytest.approx(cur[t]) for t in names[1:])
-    assert any(n.startswith("no_new_filler_added") for n in r.notes) and r.n_hold == P.n_total_min   # 出場後不足 21 檔 → 補 1% 湊檔
-    assert r.cash == pytest.approx(1 - sum(cur.values()) + cur[names[0]] - P.filler_min)
+    short = len(cur) - 1 < P.n_total_min                           # 出場後不足 21 檔 → 補 1% 湊檔
+    assert any(n.startswith("no_new_filler_added") for n in r.notes) == short and r.n_hold >= P.n_total_min
+    assert r.cash == pytest.approx(1 - sum(cur.values()) + cur[names[0]] - (P.filler_min if short else 0.0))
+    # 剛好 21 檔時出場 1 檔 → 必須補湊檔
+    cur21 = dict(list(cur.items())[:P.n_total_min])
+    r21 = cv.build_portfolio(new, cap_series(), set(TICKERS), None, P, current=cur21, no_new=True, exits=[names[0]])
+    assert r21.errors == [] and r21.n_hold == P.n_total_min and any(n.startswith("no_new_filler_added") for n in r21.notes)
     assert "no_new_positions" in r.notes
 
 
@@ -290,13 +295,14 @@ def test_window_helpers():
 # ------------------------------------------------------------------ 宣告檔
 def test_declaration_v2_matches_code():
     d = load_declaration()
-    assert d["version"].startswith("2.") and d["status"] == "final"
+    assert d["version"] == "2.1.0" and d["status"] == "final"
     r = d["portfolio_rules"]
-    assert (r["w_high"], r["w_mid"], r["cap_other"], r["cap_tsmc"]) == (0.09, 0.06, 0.09, 0.20)
+    assert (r["w_high"], r["w_mid"], r["cap_other"], r["cap_tsmc"]) == (0.08, 0.055, 0.08, 0.20)
+    assert (r["w_tsmc_high"], r["w_tsmc_mid"], r["keep_rank"]) == (0.15, 0.10, 30)
     assert (r["n_conv_min"], r["n_conv_max"], r["min_hold_days"], r["max_swaps"], r["stop_loss"]) == (10, 12, 3, 4, 0.12)
     assert (r["cash_low"], r["cash_high"], r["ap_target"]) == (0.02, 0.05, 0.20)
     assert d["candidate_rules"]["n_candidates"] == 30 and d["fallback"]["name"] == "合規基準 A"
-    assert d["fallback"]["portfolio_rules"]["ap_target"] == 0.27
+    assert d["fallback"]["portfolio_rules"]["ap_target"] == 0.22
 
 
 def test_declaration_detects_drift():

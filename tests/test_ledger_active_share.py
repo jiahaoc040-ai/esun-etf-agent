@@ -44,3 +44,25 @@ def test_check_active_share_flags_copycat():
     mine = {**{str(1000 + i): 0.07 for i in range(10)}, "2330": 0.05}
     r = check_active_share(mine, {"00981A": etf})
     assert not r["ok"] and r["worst_etf"] == "00981A"
+
+
+def test_ledger_never_adds_shares_or_cash_on_ex_rights():
+    """1005 版辦法六(十二)註 1：除息現金、除權配股都不在除權息日入帳，期末由主辦方一次加回。
+    Ledger 沒有（也不該有）入帳除權息的方法；除權日當天持股與現金不變，每日以官方庫存對帳。"""
+    L = Ledger(cash=5_000_000.0, holdings={"2330": 3000})
+    assert not [m for m in dir(L) if "dividend" in m.lower() or "rights" in m.lower()]
+    before = (L.cash, dict(L.holdings))
+    L.apply_fills([], {})                                    # 除權息日無交易：什麼都不會變
+    assert (L.cash, L.holdings) == before
+    assert L.reconcile({"2330": 3000}, 5_000_000.0) == []    # 官方庫存也沒有加配股 → 對得上
+    assert L.reconcile({"2330": 3300}) == ["2330: 自記 3000 ≠ 官方 3300"]   # 若官方已調整 → 以官方為準
+    L.overwrite_from_official({"2330": 3300})
+    assert L.holdings == {"2330": 3300}
+
+
+def test_ledger_split_adjusts_shares_but_not_cash():
+    L = Ledger(cash=100.0, holdings={"2327": 1000, "2330": 2000})
+    assert L.apply_split("2327", 4.0) == 4000                # 分割 1 → 4
+    assert L.apply_split("2330", 0.5) == 1000                # 減資 2 合 1
+    assert L.apply_split("9999", 2.0) == 0 and L.cash == 100.0
+    assert L.holdings == {"2327": 4000, "2330": 1000}

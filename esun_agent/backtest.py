@@ -7,7 +7,8 @@
   - 因子與基準報酬用還原價；若持股在 T 日發生分割/減資，持股股數與 D 日收盤價先換成 T 日的股數口徑
     （NAV 不變），下單與成交仍是原始價格口徑。
   - T 日沒有成交價（停牌）的委託視為未成交；估值沿用最近收盤價。
-假設與限制：不含股利（官方除息現金期末才加回）、無市場衝擊、成交一律以均價成交。
+假設與限制：不含股利、也不含除權配股——官方規定除息現金與除權配發股數都不在除權息日入帳，而由主辦方期末一次加回，
+所以回測 Ledger 在除權息日不增加現金、不增加股數（僅股票分割／面額變更／減資會調整股數）；無市場衝擊、成交一律以均價成交。
 """
 from __future__ import annotations
 
@@ -38,9 +39,9 @@ class Strategy:
     min_adv: float = 2e8            # 20 日均成交值門檻（單檔約 4% × 10 億 = 4000 萬，≈ 日成交值的 20% 以內）
     rebalance_every: int = 1
 
-    def decide(self, fdf, cap, current, top10):
+    def decide(self, fdf, cap, current, top15):
         sc = score(fdf, self.factor_weights, eligible(fdf, self.min_adv))
-        return construct_portfolio(sc, current, self.params, top10)
+        return construct_portfolio(sc, current, self.params, top15)
 
 
 @dataclass
@@ -137,7 +138,7 @@ def cap_weight_benchmark(panel: Panel, caps: pd.DataFrame, start: str | None = N
 
 
 def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = None,
-                 top10: dict[str, dict[str, float]] | None = None, start: str | None = None,
+                 top15: dict[str, dict[str, float]] | None = None, start: str | None = None,
                  end: str | None = None, capital: float = INITIAL_CAPITAL,
                  caps: pd.DataFrame | None = None, cost_free: bool = False, tilt_fn=None) -> BacktestResult:
     """start/end 為「交易日 T」的範圍。第一個可交易日至少是第 MIN_HISTORY+1 個資料日（因子暖機）。"""
@@ -146,7 +147,7 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
     dates = panel.dates
     first = MIN_HISTORY if start is None else max(MIN_HISTORY, next(i for i, d in enumerate(dates) if d >= start))
     last = len(dates) - 1 if end is None else max(i for i, d in enumerate(dates) if d <= end)
-    top10_ap = top10 or None
+    top15_ap = top15 or None
 
     led = Ledger(cash=float(capital), fee_rate=0.0 if cost_free else FEE_RATE, tax_rate=0.0 if cost_free else TAX_RATE)
     last_close: dict[str, float] = {}
@@ -160,8 +161,7 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
             last_close[t] = float(v)
         # --- T 日若有分割/減資：持股與 D 日收盤價換成 T 日口徑
         for t, k in panel.split_ratios_on(T).items():
-            if t in led.holdings:
-                led.holdings[t] = int(round(led.holdings[t] * k))
+            led.apply_split(t, k)
             if t in last_close:
                 last_close[t] /= k
         prev_nav = led.nav({t: last_close[t] for t in led.holdings}) if led.holdings else led.cash
@@ -179,11 +179,11 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
             tilts_changed = tilts != last_tilts
             last_tilts = tilts
         if ((i - first) % strat.rebalance_every == 0 or tilts_changed
-                or (guard is not None and guard(cur_w, top10_ap))):
+                or (guard is not None and guard(cur_w, top15_ap))):
             rebalanced = True
             fdf = factors_on(factors, D)
-            res = (strat.decide(fdf, caps.loc[D], cur_w, top10_ap, tilts) if tilt_fn is not None
-                   else strat.decide(fdf, caps.loc[D], cur_w, top10_ap))
+            res = (strat.decide(fdf, caps.loc[D], cur_w, top15_ap, tilts) if tilt_fn is not None
+                   else strat.decide(fdf, caps.loc[D], cur_w, top15_ap))
             tickers = sorted(set(res.weights) | set(led.holdings))
             decisions = [{"ticker": t, "target_weight": res.weights.get(t, 0.0), "decision_id": f"D{n}"}
                          for n, t in enumerate(tickers, 1)]
@@ -212,8 +212,8 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
         w = {t: n * last_close[t] / nav for t, n in led.holdings.items()}
         cash_ratio = led.cash / nav
         ap_ok, ap_min = True, float("nan")
-        if top10_ap and w:
-            ap = check_target_weights(w, top10_ap, margin=0.0, expected_etfs=list(top10_ap))
+        if top15_ap and w:
+            ap = check_target_weights(w, top15_ap, margin=0.0, expected_etfs=list(top15_ap))
             ap_ok, ap_min = bool(ap["ok"]), float(ap["min"])
         rows.append({
             "date": T, "nav": nav, "cash_ratio": cash_ratio, "n_hold": len(w),
@@ -221,7 +221,7 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
             "turnover": traded / 2 / prev_nav, "fee": cost["fee"], "tax": cost["tax"], "n_orders": len(fills),
             "v_holdings": int(not (MIN_HOLDINGS <= len(w) <= MAX_HOLDINGS)),
             "v_weight": int(any(x > max_weight(t) + 1e-12 for t, x in w.items())),
-            "v_cash": int(cash_ratio < 0 or cash_ratio >= CASH_MAX), "ap_ok": ap_ok, "ap_min": ap_min,
+            "v_cash": int(cash_ratio < 0 or cash_ratio > CASH_MAX), "ap_ok": ap_ok, "ap_min": ap_min,
             "rebalanced": rebalanced,
         })
         nav_pts[T] = nav
@@ -232,7 +232,7 @@ def run_backtest(panel: Panel, strat, factors: dict[str, pd.DataFrame] | None = 
                           rejected_buys=rejected_buys)
 
 
-def window_returns(panel: Panel, strat, factors, top10, length: int = 24, step: int = 5,
+def window_returns(panel: Panel, strat, factors, top15, length: int = 24, step: int = 5,
                    first: str | None = None, last: str | None = None, caps: pd.DataFrame | None = None,
                    bench_cw: pd.Series | None = None) -> pd.DataFrame:
     """每隔 step 個交易日起算一段 length 個交易日的全新回測（從 10 億現金起、含建倉成本），
@@ -247,7 +247,7 @@ def window_returns(panel: Panel, strat, factors, top10, length: int = 24, step: 
     out = []
     for s in range(lo, hi + 1, step):
         a, b = dates[s], dates[s + length - 1]
-        r = run_backtest(panel, strat, factors, top10, start=a, end=b, caps=caps)
+        r = run_backtest(panel, strat, factors, top15, start=a, end=b, caps=caps)
         p = perf(r.nav)
         ew = equal_weight_benchmark(panel, a, b)
         cw = bench_cw[(bench_cw.index >= dates[s - 1]) & (bench_cw.index <= b)]

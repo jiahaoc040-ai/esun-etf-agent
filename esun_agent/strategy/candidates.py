@@ -35,16 +35,16 @@ class CandidateParams:
                                            # 重疊扣分會讓它永遠進不了前 30 名，但宣告允許 LLM 選它（上限 20%）
 
 
-def etf_overlap_counts(top10: dict[str, dict[str, float]] | None) -> tuple[dict[str, int], int]:
+def etf_overlap_counts(top15: dict[str, dict[str, float]] | None) -> tuple[dict[str, int], int]:
     """{ticker: 出現在幾檔主動型 ETF 的前 N 大}，以及有資料的 ETF 檔數。"""
     counts: dict[str, int] = {}
-    for h in (top10 or {}).values():
+    for h in (top15 or {}).values():
         for t in top_n(h):
             counts[t] = counts.get(t, 0) + 1
-    return counts, len(top10 or {})
+    return counts, len(top15 or {})
 
 
-def screen(fdf: pd.DataFrame, top10: dict[str, dict[str, float]] | None, params: CandidateParams | None = None,
+def screen(fdf: pd.DataFrame, top15: dict[str, dict[str, float]] | None, params: CandidateParams | None = None,
            held: set[str] | frozenset = frozenset()) -> pd.DataFrame:
     """fdf = factors_on(factors, D)。回傳候選表（index = ticker，依 score 由高到低），欄位：
     score、rank（合格名單內的名次，1 起）、inst5、inst10、rs20、valchg、adv20、overlap_n、overlap_frac、in_pool、held、forced。
@@ -54,7 +54,7 @@ def screen(fdf: pd.DataFrame, top10: dict[str, dict[str, float]] | None, params:
     sub = fdf.loc[ok, CANDIDATE_FACTORS + ["adv20"]].copy()
     if sub.empty:
         return sub.assign(score=[], rank=[], overlap_n=[], overlap_frac=[], in_pool=[], held=[], forced=[])
-    counts, n_etf = etf_overlap_counts(top10)
+    counts, n_etf = etf_overlap_counts(top15)
     sub["overlap_n"] = [counts.get(t, 0) for t in sub.index]
     sub["overlap_frac"] = sub["overlap_n"] / n_etf if n_etf else 0.0
     sub["score"] = (p.w_trust5 * zscore(sub["inst5"]) + p.w_trust10 * zscore(sub["inst10"])

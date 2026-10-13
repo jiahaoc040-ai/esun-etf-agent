@@ -59,7 +59,7 @@ class CoreSatellite:
         return self.params.min_adv
 
     def decide(self, fdf: pd.DataFrame, cap: pd.Series, current: dict[str, float],
-               top10: dict[str, dict[str, float]] | None) -> PortfolioResult:
+               top15: dict[str, dict[str, float]] | None) -> PortfolioResult:
         """fdf：D 日因子表；cap：D 日市值；current：現持股占 NAV 權重。回傳目標權重。"""
         p, pp = self.params, self.params.portfolio_params()
         # --- 核心：市值前 core_k（需有 D 日價格且通過流動性門檻）
@@ -82,4 +82,4 @@ class CoreSatellite:
         raw = {t: min(2.0, max(0.5, 1.0 + p.tilt * float(sc[t]))) for t in sat}
         sat_w = _waterfill(raw, (1.0 - p.core_share) * invested, {t: cap_of(t, pp) for t in sat})
         target.update(sat_w)
-        return finalize_weights(target, current, pp, top10, core + sat)
+        return finalize_weights(target, current, pp, top15, core + sat)

@@ -40,12 +40,12 @@ class BenchmarkDecider:
     rebalance_every = 1
     min_adv = 0.0
 
-    def decide(self, fdf, cap, current, top10):
+    def decide(self, fdf, cap, current, top15):
         w = capped_cap_weights(cap.dropna())
         return PortfolioResult(weights=w, selected=list(w), cash=0.0)
 
 
-def paper_nav(panel: Panel, factors, caps: pd.DataFrame, strat, top10=None,
+def paper_nav(panel: Panel, factors, caps: pd.DataFrame, strat, top15=None,
               first: int = MIN_HISTORY) -> tuple[pd.Series, dict]:
     """紙上組合（無費用、無整股）：D 日收盤決定權重（只用 D 日以前資料），T 日賺 D 收盤→T 收盤的還原報酬；
     非再平衡日權重隨報酬漂移。回傳 (NAV 序列（起點 1.0）, {T: PortfolioResult})。"""
@@ -57,7 +57,7 @@ def paper_nav(panel: Panel, factors, caps: pd.DataFrame, strat, top10=None,
         D, T = dates[i - 1], dates[i]
         if (i - first) % strat.rebalance_every == 0:
             cur = {t: v / nav for t, v in vals.items()}
-            res = strat.decide(factors_on(factors, D), caps.loc[D], cur, top10)
+            res = strat.decide(factors_on(factors, D), caps.loc[D], cur, top15)
             tot = sum(res.weights.values())
             norm = 1.0 if tot <= 1.0 + 1e-9 else tot
             vals = {t: w / norm * nav for t, w in res.weights.items() if w > 0}
@@ -87,7 +87,7 @@ LADDER = [
 ]
 
 
-def attribution_ladder(panel: Panel, factors, caps: pd.DataFrame, top10, params: CoreSatelliteParams,
+def attribution_ladder(panel: Panel, factors, caps: pd.DataFrame, top15, params: CoreSatelliteParams,
                        oos_start: str, strategy_name: str = "strategy") -> dict:
     """回傳 {"rungs": [{code, label, nav, oos, step}], "total": 策略 − (b), "sat": 衛星分析, "navs": {code: Series}}。"""
     ideal = replace(params, rebalance_every=1, band=0.0, cash_target=0.0)
@@ -97,11 +97,11 @@ def attribution_ladder(panel: Panel, factors, caps: pd.DataFrame, top10, params:
     navs["P2"], log2 = paper_nav(panel, factors, caps, CoreSatellite("P2", ideal))
     navs["P3"], _ = paper_nav(panel, factors, caps, CoreSatellite("P3", replace(ideal, cash_target=params.cash_target)))
     p4 = replace(params)
-    navs["P4"], _ = paper_nav(panel, factors, caps, CoreSatellite("P4", p4), top10=None)
-    navs["P5"], _ = paper_nav(panel, factors, caps, CoreSatellite("P5", p4), top10=top10)
+    navs["P4"], _ = paper_nav(panel, factors, caps, CoreSatellite("P4", p4), top15=None)
+    navs["P5"], _ = paper_nav(panel, factors, caps, CoreSatellite("P5", p4), top15=top15)
     strat = CoreSatellite(strategy_name, params)
-    navs["P6"] = run_backtest(panel, strat, factors, top10, caps=caps, cost_free=True).nav
-    navs["P7"] = run_backtest(panel, strat, factors, top10, caps=caps).nav
+    navs["P6"] = run_backtest(panel, strat, factors, top15, caps=caps, cost_free=True).nav
+    navs["P7"] = run_backtest(panel, strat, factors, top15, caps=caps).nav
     rungs, prev = [], None
     for code, label, _ in LADDER:
         r = oos_return(navs[code], oos_start)

@@ -3,7 +3,12 @@
 規則：委託全數以「當日成交均價」成交（均價 = 成交金額 ÷ 成交股數），
 買賣各收 0.1425% 手續費、賣出另收 0.3% 證交稅，從現金扣除。
 NAV = Σ 持股股數 × 當日收盤價 + 現金。
-除息現金不在除息日入帳（主辦方期末一次加回），除權配股/分割由主辦方調整股數 → 以後台庫存為準。
+公司行動（1005 版辦法六(十二)註 1）：
+  - 除息現金、除權配發股數**都不在除權息日入帳**，由主辦方統一累積、初賽結束時一併加回最終淨值。
+    因此本 Ledger 在除權息日**不增加現金、不增加股數**（刻意沒有 ex-rights／ex-dividend 的入帳方法）；
+    除權息日股價下調但股數不變，日 NAV 會偏低，期末才補，屬官方設計。
+  - 股票分割／面額變更／減資（單日股價比 ≥ 約 1.67 倍的跳空）由主辦方依實際情況調整持股數量，用 apply_split 處理。
+  - 每日以主辦方後台庫存為準：reconcile 比對、overwrite_from_official 覆寫。賣出股數上限也以官方庫存為準（C13）。
 """
 import json
 from dataclasses import dataclass, field
@@ -42,6 +47,14 @@ class Ledger:
                 self.holdings[t] = self.holdings.get(t, 0) + n
             fee_total += fee
         return {"fee": fee_total, "tax": tax_total}
+
+    # ---- 公司行動
+    def apply_split(self, ticker: str, ratio: float) -> int:
+        """股票分割／面額變更（ratio > 1，1 股變 ratio 股）或減資（ratio < 1）後的持股調整，回傳新股數。
+        注意：**除權配股不走這裡**——配發股數期末才由主辦方一次加回，除權日不得增加股數。"""
+        if ticker in self.holdings:
+            self.holdings[ticker] = int(round(self.holdings[ticker] * ratio))
+        return self.holdings.get(ticker, 0)
 
     # ---- 評價 ----
     def market_value(self, close: dict[str, float]) -> float:
