@@ -66,6 +66,7 @@
 - cron 設在台灣時間每個交易日前一天 19:45（主辦方 19:00 更新淨值）；非交易日跳過，交易日曆可抓 TWSE 休市日 API。
 - 流程：讀取官方結算庫存與 NAV（格式先定成 `runs/YYYY-MM-DD/official_state.json`，取得方式待確認）→ 與 Ledger 對帳 → 以官方資料為準 → T1 抓資料 → T3 產生候選權重 → T4 組 D-Plan → 驗證 → 輸出 `runs/<date>/D-Plan_<team_id>_<date>.json` 並上傳成 artifact。
 - 原始資料和 LLM 回應都留存在 runs/<date>/raw/，供 12/2 審查使用。
+- 人工收件匣：`esun_agent.data.inbox.load_inbox(trade_date, prev_date)` 讀 data/inbox/<trade_date>/，以 `merge_into_inputs` 併入 inputs["events"]；警告寫入當日 log（已實作，見 data/inbox/README.md）。
 - 失敗時發通知（GitHub Actions 失敗 email 即可）。
 
 ## T6 ETF 投資策略說明文件（10/21–10/26 繳交）

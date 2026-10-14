@@ -137,7 +137,7 @@ class ConvSim(Sim):
         super().__init__(env, tmp_path, **kw)
         self.state_path = tmp_path / "state" / "conviction.json"
 
-    def day(self, trade_date: str, llm, **kw):
+    def day(self, trade_date: str, llm, extra_events=(), **kw):
         from esun_agent.agent.conviction_agent import assemble_conviction_day, write_conviction_dplan
         from esun_agent.agent.conviction_state import ConvictionState
         panel = self.env["panel"]
@@ -145,6 +145,8 @@ class ConvSim(Sim):
         ctx = DayContext(team_id=self.team, trade_date=trade_date, prev_date=panel.dates[i - 1], panel=panel,
                          factors=self.env["factors"], caps=self.env["caps"], top15=self.env["top15"], prev_nav=self.nav,
                          cash=self.ledger.cash, holdings=dict(self.ledger.holdings), inputs=load_inputs(trade_date))
+        if extra_events:
+            ctx.inputs = {**ctx.inputs, "events": list(ctx.inputs.get("events", [])) + list(extra_events)}
         kw.setdefault("events", [])
         res = assemble_conviction_day(ctx, llm, ConvictionState.load(self.state_path), **kw)
         write_conviction_dplan(res, self.tmp / "out", self.state_path)

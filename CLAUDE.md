@@ -30,6 +30,7 @@
 - `esun_agent/universe.py` 150 檔與主動型 ETF 名單
 - `esun_agent/orders.py` 官方委託公式
 - `esun_agent/ledger.py` 記帳（成交、NAV、與官方庫存對帳；除權息不入帳、分割才調股數）
+- `esun_agent/data/inbox.py` 人工收件匣 `data/inbox/<交易日>/`（文件＋同名 .meta.json → events；缺 meta／url、或非金融機構來源含買進／賣出／加碼／減碼／建議等指示性語句 → 略過並警告；全部複製到 runs/<交易日>/raw/inbox/）。`scripts/ingest_inbox.py` 預覽；daily_run 以 `load_inbox` ＋ `merge_into_inputs` 併入 DayContext.inputs
 - `esun_agent/data/etf_holdings.py` 主動型 ETF 持股（MoneyDJ 全部持股頁 Basic0007B → 前 15 大，存 `data/etf_top15/`）
 - `esun_agent/active_share.py` Active Share 檢查（前 15 大）
 - `esun_agent/dplan_validate.py` 提交前驗證（schema + C1/C2/C6/C9/C11/C12/C13/C14 + 覆蓋）
