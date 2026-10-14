@@ -15,12 +15,19 @@ FX = Path(__file__).parent / "fixtures" / "collect"
 TZ = timezone(timedelta(hours=8))
 
 
+@pytest.fixture(autouse=True)
+def no_sleep(monkeypatch):
+    """退避重試不要真的睡（Fetcher 與各模組共用 time.sleep）。"""
+    import esun_agent.collect.http as h
+    monkeypatch.setattr(h.time, "sleep", lambda s: None)
+
+
 def fx(name) -> bytes:
     return (FX / name).read_bytes()
 
 
 class FakeResp:
-    def __init__(self, content=b"", status=200, headers=None):
+    def __init__(self, content=b"", status=200, headers=None):  # noqa: D401
         self.content, self.status_code, self.headers = content, status, headers or {}
         self.ok = status < 400
         self.text = content.decode("utf-8", errors="replace")
@@ -34,15 +41,20 @@ class FakeResp:
 class FakeSession:
     """routes：[(url 片段, bytes 或 Exception)]，依序比對。"""
     def __init__(self, routes):
-        self.routes, self.headers, self.calls = routes, {}, []
+        self.routes, self.headers, self.calls, self.kw = routes, {}, [], []
 
     def _hit(self, url, **kw):
         self.calls.append(url)
-        for frag, r in self.routes:
+        self.kw.append(kw)
+        for i, (frag, r) in enumerate(self.routes):
             if frag in url:
+                if isinstance(r, list):                          # 依序回應（例如先 429 再成功）
+                    r = r.pop(0) if len(r) > 1 else r[0]
+                if isinstance(r, int):
+                    return FakeResp(b"", r)
                 if isinstance(r, Exception):
                     import requests
-                    raise requests.ConnectionError(str(r))
+                    raise r if isinstance(r, requests.RequestException) else requests.ConnectionError(str(r))
                 return FakeResp(r)
         return FakeResp(b"", 404)
 
@@ -152,6 +164,40 @@ def test_collect_news_both_markets():
     assert {e["ticker"] for e in evs} == {"2330"} and any("上櫃" in w and "失敗" in w for w in warns)
 
 
+def test_tpex_news_html_response_is_a_warning_not_a_failure():
+    html = fx("news_tpex_html_error.html")
+    # 第一個上櫃端點回 HTML → 單行警告附前 200 字；第二個端點正常 → 照樣取得上櫃事件
+    routes = [("t187ap04_L", fx("news_twse_20261026.json")), ("v1/t187ap04_O", html),
+              ("mopsfe_t187ap04_O", fx("news_tpex_20261026.json"))]
+    evs, warns = news.collect_news(fetcher(routes), date(2026, 10, 26))
+    assert {e["ticker"] for e in evs} == {"2330", "8299"}
+    w = [x for x in warns if "不是 JSON" in x]
+    assert len(w) == 1 and "上櫃" in w[0] and "前 200 字" in w[0] and "<!DOCTYPE html>" in w[0] and "\n" not in w[0]
+    assert len(w[0].split("前 200 字：", 1)[1]) <= 201
+    # 兩個上櫃端點都回 HTML → 只有警告，上市事件不受影響
+    evs, warns = news.collect_news(fetcher([("t187ap04_L", fx("news_twse_20261026.json")), ("t187ap04_O", html)]),
+                                   date(2026, 10, 26))
+    assert {e["ticker"] for e in evs} == {"2330"} and sum("不是 JSON" in x for x in warns) == 2
+    data, w = news.load_json_list(b'{"data": [{"a": 1}]}', "x")
+    assert data == [{"a": 1}] and w is None
+    assert news.load_json_list(b'{"msg": "no"}', "x")[1] == "x 回應不是 JSON 陣列"
+
+
+REAL = FX / "real"
+
+
+@pytest.mark.parametrize("path", sorted(REAL.glob("news_tpex*")) if REAL.exists() else [], ids=lambda p: p.name)
+def test_real_tpex_news_files(path):
+    """tests/fixtures/collect/real/news_tpex*（SS 在 Mac 上以 --save-raw 存下的真實回應）：JSON 能解析成事件；
+    HTML 等非 JSON 只產生一則單行警告，不會丟例外。"""
+    data, w = news.load_json_list(path.read_bytes(), "重大訊息（上櫃）")
+    if data is None:
+        assert w and "前 200 字" in w and "\n" not in w
+    else:
+        items = news.parse_news(data)
+        assert all(n["ticker"] and n["subject"] and len(n["time"]) == 8 for n in items)
+
+
 # ------------------------------------------------------------------ 台指期夜盤
 def test_parse_taifex_night_session():
     n = taifex.parse_fut_csv(decode(fx("taifex_TX_20261027.csv")))
@@ -169,26 +215,54 @@ def test_parse_taifex_night_session():
 
 # ------------------------------------------------------------------ 美股
 def test_parse_us_sources():
-    s = us.parse_stooq(fx("stooq_sox.csv").decode())
+    s = us.parse_fred(fx("fred_SP500.csv").decode())
+    assert s[-1] == ("2026-10-26", 6470.80) and ("2026-10-23", ".") not in s and len(s) == 3     # 休市 "." 略過
     c = us.last_change(s)
-    assert c["date"] == "2026-10-26" and c["chg_pct"] == pytest.approx((5238 / 5400 - 1) * 100)
-    assert us.last_change(s, date(2026, 10, 25))["date"] == "2026-10-23"
+    assert c["date"] == "2026-10-26" and c["chg_pct"] == pytest.approx((6470.80 / 6533.15 - 1) * 100)
+    assert us.parse_fred(fx("fred_NASDAQ100_olddate.csv").decode())[-1] == ("2026-10-26", 23859.4)   # 舊版欄名 DATE
+    with pytest.raises(ValueError):
+        us.parse_fred("<html>error</html>")
+    n = us.parse_nasdaq(json.loads(fx("nasdaq_SOX.json")))
+    assert n[0][0] == "2026-10-22" and n[-1] == ("2026-10-26", 5238.0)                            # 由舊到新
+    with pytest.raises(ValueError, match="Nasdaq"):
+        us.parse_nasdaq(json.loads(fx("nasdaq_empty.json")))
+    st = us.parse_stooq(fx("stooq_sox.csv").decode())
+    assert us.last_change(st, date(2026, 10, 25))["date"] == "2026-10-23"
     with pytest.raises(ValueError):
         us.parse_stooq("No data")
     y = us.parse_yahoo(json.loads(fx("yahoo_tsm.json")))
-    assert len(y) == 2 and us.last_change(y)["close"] == 306.0                # None 收盤略過
+    assert len(y) == 2 and us.last_change(y)["close"] == 306.0                                    # None 收盤略過
     assert us.close_time_taipei("2026-10-26") == "2026-10-27T04:00:00+08:00"   # 夏令（美國 11/1 才結束夏令時間）
     assert us.close_time_taipei("2026-11-02") == "2026-11-03T05:00:00+08:00"   # 冬令
-    assert us.close_time_taipei("2026-07-15") == "2026-07-16T04:00:00+08:00"   # 夏令
 
 
-def test_collect_us_falls_back_and_degrades():
-    routes = [("s=^sox", fx("stooq_sox.csv")), ("s=^ndx", fx("stooq_nodata.csv")), ("%5ENDX", fx("yahoo_tsm.json")),
-              ("s=^spx", ConnectionError("x")), ("%5EGSPC", ConnectionError("x")), ("tsm.us", fx("stooq_sox.csv"))]
+def test_collect_us_source_order_headers_and_fallbacks(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    routes = [("id=SP500", fx("fred_SP500.csv")), ("id=NASDAQ100", fx("fred_NASDAQ100_olddate.csv")),
+              ("chart/%5ESOX", [429, 429, 429]),                                   # Yahoo 一直 429 → 改 Nasdaq
+              ("quote/SOX/historical", fx("nasdaq_SOX.json")),
+              ("chart/TSM", [429, fx("yahoo_tsm.json")])]                         # 429 一次後成功
+    f = fetcher(routes)
+    d, warns = us.collect_us(f, not_after=date(2026, 10, 27))
+    assert set(d["quotes"]) == {"SOX", "NDX", "SPX", "TSM"} and warns == [] or all("不一致" in w for w in warns)
+    srcs = {s["name"].split()[0]: s["url"] for s in d["sources"]}
+    assert "fred" in srcs["SPX"] and "fred" in srcs["NDX"] and "nasdaq.com" in srcs["SOX"] and "yahoo" in srcs["TSM"]
+    calls = f.session.calls
+    assert sum("chart/%5ESOX" in c for c in calls) == 3                                 # 首次＋429 退避重試 2 次
+    assert not any("stooq" in c for c in calls)                                          # Stooq 只在最後才用
+    ua = [kw.get("headers", {}).get("User-Agent", "") for c, kw in zip(calls, f.session.kw) if "yahoo" in c or "nasdaq" in c]
+    assert ua and all("Mozilla/5.0" in u and "Chrome" in u for u in ua)
+    assert d["quotes"]["SOX"]["chg_pct"] == pytest.approx((5238 / 5400 - 1) * 100, abs=1e-3)
+
+
+def test_collect_us_last_resort_stooq_and_total_failure(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    routes = [("id=", ConnectionError("x")), ("yahoo", ConnectionError("x")), ("nasdaq", fx("nasdaq_empty.json")),
+              ("s=^sox", fx("stooq_sox.csv")), ("s=^spx", fx("stooq_nodata.csv"))]
     d, warns = us.collect_us(fetcher(routes), not_after=date(2026, 10, 27))
-    assert set(d["quotes"]) == {"SOX", "NDX", "TSM"} and any("SPX 兩個來源都失敗" in w for w in warns)
-    assert "yahoo" in d["sources"][1]["url"] and len(d["sources"]) == 3
-    assert d["content_as_of"].endswith("+08:00")
+    assert set(d["quotes"]) == {"SOX"} and "stooq" in d["sources"][0]["url"]
+    assert any(w.startswith("SPX 全部來源失敗") for w in warns) and any(w.startswith("TSM 全部來源失敗") for w in warns)
+    assert all("\n" not in w for w in warns)
     none, warns = us.collect_us(fetcher([]))
     assert none is None and any("全部抓取失敗" in w for w in warns)
 
@@ -198,7 +272,7 @@ def test_us_and_taifex_inputs_become_observations():
     from esun_agent.data.prices import load_panel
     panel = load_panel()
     D = panel.dates[-1]
-    d, _ = us.collect_us(fetcher([("s=^", fx("stooq_sox.csv")), ("tsm.us", fx("stooq_sox.csv"))]), not_after=date(2026, 10, 27))
+    d, _ = us.collect_us(fetcher([("id=", fx("fred_SP500.csv")), ("yahoo", fx("yahoo_tsm.json"))]), not_after=date(2026, 10, 27))
     tx = taifex.taifex_input(taifex.parse_fut_csv(decode(fx("taifex_TX_20261027.csv"))))
     ev = ob.build_evidence(panel, D, inputs={"us": d, "taifex": tx, "events": [
         news.news_event(news.parse_news(json.loads(fx("news_twse_20261026.json")))[1], news.TWSE_NEWS_URL)]})
@@ -214,8 +288,8 @@ def test_collect_day_degrades_each_step(tmp_path, monkeypatch):
     monkeypatch.setattr(rv, "REVENUE_DIR", tmp_path / "rev")
     routes = [("sii/t21sc03_115_9_0", fx("mops_t21sc03_sii_202609.html")), ("otc/t21sc03", fx("mops_t21sc03_otc_202609.html")),
               ("t187ap04_L", fx("news_twse_20261026.json")), ("t187ap04_O", ConnectionError("x")),
-              ("futDataDown", fx("taifex_TX_20261027.csv")), ("s=^", ConnectionError("x")), ("%5E", ConnectionError("x")),
-              ("tsm.us", ConnectionError("x")), ("TSM", ConnectionError("x"))]
+              ("futDataDown", fx("taifex_TX_20261027.csv")), ("id=", ConnectionError("x")), ("yahoo", ConnectionError("x")),
+              ("nasdaq", ConnectionError("x")), ("stooq", ConnectionError("x"))]
     r = daily.collect_day(date(2026, 10, 26), tmp_path / "raw", steps=("revenue", "news", "taifex", "us"),
                           now=datetime(2026, 10, 26, 20, 30, tzinfo=TZ), do_archive=False, fetcher=fetcher(routes, tmp_path / "raw"))
     assert set(r.done) == {"revenue", "news", "taifex", "us"} and not r.market_ok

@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..data import market as mkt
+from ..data.market import MarketNotReady
 from .http import Fetcher
 from .news import collect_news
 from .revenue import collect_revenue, fact_event, last_reported_month
@@ -29,17 +30,19 @@ class CollectResult:
     warnings: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
     market_ok: bool = False
+    market_not_ready: bool = False                        # 最新行情不是 D（當天尚未公布）
 
 
 def collect_market(D: date, raw_dir: Path | None, inst: bool = True, fetcher: mkt.MarketFetcher | None = None) -> list[str]:
     """抓最新交易日行情並確認就是 D；再抓 D 日三大法人。回傳警告。行情日期不是 D 時丟 RuntimeError。"""
     f = fetcher or mkt.MarketFetcher(sleep=0.5, raw_dir=raw_dir)
-    df = mkt.fetch_latest(f)
+    warns: list[str] = []
+    df = mkt.fetch_latest(f, expected=D, warnings=warns)
     got = df["date"].iloc[0]
     if got != D.isoformat():
-        raise RuntimeError(f"交易所最新行情日期是 {got}，不是決策日 {D}（收盤資料尚未更新？）")
+        raise MarketNotReady(f"交易所最新行情日期是 {got}，不是決策日 {D}（收盤資料尚未公布？）")
     mkt.save_daily(df)
-    warns = [f"{D} 缺少行情（停牌或遺漏）：{', '.join(m)}" for m in [mkt.check_coverage(df)] if m]
+    warns += [f"{D} 缺少行情（停牌或遺漏）：{', '.join(m)}" for m in [mkt.check_coverage(df)] if m]
     if inst:
         parts = []
         for label, fn in (("上市 T86", f.twse_inst), ("上櫃三大法人", f.tpex_inst)):
@@ -96,7 +99,11 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
             res.warnings.append(f"[{name}] 失敗：{type(e).__name__}: {e}")
 
     def do_market():
-        res.warnings.extend(collect_market(D, raw_dir / "market" if raw_dir else None, inst="inst" in steps))
+        try:
+            res.warnings.extend(collect_market(D, raw_dir / "market" if raw_dir else None, inst="inst" in steps))
+        except MarketNotReady:
+            res.market_not_ready = True
+            raise
         res.market_ok = True
 
     def do_etf():

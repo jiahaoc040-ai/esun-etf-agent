@@ -10,6 +10,7 @@ parser 皆為純函式（不碰網路），以 tests/fixtures/market/ 的假資�
 """
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import re
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+from urllib3.exceptions import ProtocolError
 
 from ..config import ROOT
 from ..universe import authority_for, load_universe
@@ -297,6 +299,8 @@ class MarketFetcher:
         self.raw_dir = raw_dir  # 設定後，每個成功的原始回應都存成 JSON（供製作真實 fixture）
 
     def get_json(self, url: str, params: dict | None = None):
+        """GET → JSON。連線錯誤、讀取中斷（IncompleteRead／ChunkedEncodingError／ProtocolError）、HTTP 錯誤與
+        JSON 解析失敗都重試（最多 retries 次，退避 1、2、4… 秒）。"""
         last: Exception | None = None
         for attempt in range(self.retries):
             if self.sleep:
@@ -307,10 +311,11 @@ class MarketFetcher:
                 data = resp.json()
                 self._save_raw(url, params, data)
                 return data
-            except (requests.RequestException, ValueError) as e:
+            except (requests.RequestException, http.client.IncompleteRead, ProtocolError, ValueError) as e:
                 last = e
-                time.sleep(min(2 ** attempt, 8))
-        raise RuntimeError(f"GET {url} {params} 失敗: {last}") from last
+                if attempt + 1 < self.retries:
+                    time.sleep(min(2 ** attempt, 8))
+        raise RuntimeError(f"GET {url} {params} 失敗（{self.retries} 次）: {type(last).__name__}: {last}") from last
 
     def _save_raw(self, url: str, params: dict | None, data) -> None:
         if self.raw_dir is None:
@@ -354,10 +359,34 @@ class MarketFetcher:
 
 # --------------------------------------------------------------------------- 取得單日 + 儲存
 
-def fetch_latest(fetcher: MarketFetcher | None = None) -> pd.DataFrame:
-    """抓最新交易日（上市+上櫃）行情；兩市場日期必須一致，否則丟錯（避免存到半份資料）。"""
+class MarketNotReady(RuntimeError):
+    """交易所最新行情還不是要求的日期（當天收盤資料尚未公布）。"""
+
+
+def fetch_latest(fetcher: MarketFetcher | None = None, expected: date | None = None, warnings: list[str] | None = None
+                 ) -> pd.DataFrame:
+    """抓最新交易日（上市+上櫃）行情；兩市場日期必須一致，否則丟錯（避免存到半份資料）。
+    expected（決策日）給定時：上櫃 OpenAPI 失敗或日期不是 expected，改用依日期查詢的 afterTrading/otc 端點
+    （回應日期必須等於 expected，否則丟錯）。"""
     f = fetcher or MarketFetcher()
-    df = pd.concat([f.twse_day_all(), f.tpex_day_all()], ignore_index=True)
+    twse = f.twse_day_all()
+    if expected is not None and not twse.empty and twse["date"].iloc[0] != expected.isoformat():
+        raise MarketNotReady(f"上市最新行情日期是 {twse['date'].iloc[0]}，不是 {expected}（當天收盤資料尚未公布？）")
+    try:
+        tpex = f.tpex_day_all()
+        if expected is not None and not tpex.empty and tpex["date"].iloc[0] != expected.isoformat():
+            raise ValueError(f"OpenAPI 日期 {tpex['date'].iloc[0]} ≠ {expected}")
+        if tpex.empty:
+            raise ValueError("OpenAPI 回傳空資料")
+    except Exception as e:  # noqa: BLE001
+        if expected is None:
+            raise
+        if warnings is not None:
+            warnings.append(f"上櫃日行情 OpenAPI 失敗（{type(e).__name__}: {str(e)[:80]}），改用 afterTrading/otc?date={expected:%Y/%m/%d}")
+        tpex = f.tpex_day(expected)
+        if tpex.empty:
+            raise RuntimeError(f"上櫃日行情 {expected} 依日期查詢也沒有資料（可能尚未公布）") from e
+    df = pd.concat([twse, tpex], ignore_index=True)
     if df.empty:
         raise RuntimeError("最新行情為空")
     if df["date"].nunique() != 1:

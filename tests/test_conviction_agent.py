@@ -70,7 +70,7 @@ def test_five_day_simulation_zero_errors_and_rules(env, tmp_path):
         res[T] = r = sim.day(T, llm)
         assert r.mode == "llm" and len(r.attempts) == 1, (T, r.attempts)
         w = check_day(sim, r, T, before)
-        assert 10 <= len(r.state.picks) <= 12 and 21 <= len(w) <= 24
+        assert 10 <= len(r.state.picks) <= 12 and 23 <= len(w) <= 24
         assert max(x for t, x in w.items() if t != "2330") < 0.095
     d1 = res[DAYS[0]]
     assert d1.doc["market_view"]["posture"]["net_exposure_intent"] == "increase" and d1.doc["no_trade_decisions"] == []
@@ -201,7 +201,7 @@ def test_fallback_hold_then_base(env, tmp_path):
     r2 = sim.day(DAYS[1], FakeLLM([conviction_llm()]))              # 從合規基準 A 轉入集中組合（首次建倉不受換股上限）
     assert r2.mode == "llm" and 10 <= len(r2.state.picks) <= 12
     w2 = sim.weights(DAYS[1])
-    assert 21 <= len(w2) <= 24
+    assert 23 <= len(w2) <= 24
     class Boom(FakeLLM):
         def generate(self, system, user, **kw):
             self.calls.append((system, user))
@@ -259,4 +259,4 @@ def test_real_data_proxy_window_no_violations(env):
     r = cb.run_conviction_backtest(env["panel"], env["factors"], env["caps"], env["top15"], env["panel"].dates[i],
                                    env["panel"].dates[i + 23])
     assert r.violations["holdings"] == 0 and r.violations["cash"] == 0 and r.build_errors == 0
-    assert (r.daily["ap_min"] >= ACTIVE_SHARE_MIN).all() and r.daily["n_hold"].between(21, 24).all()
+    assert (r.daily["ap_min"] >= ACTIVE_SHARE_MIN).all() and r.daily["n_hold"].between(23, 24).all()

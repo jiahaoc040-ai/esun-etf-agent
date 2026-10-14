@@ -43,8 +43,13 @@ class LLMError(RuntimeError):
     pass
 
 
+TIMEOUT_STATUS = 598                          # 讀取／連線逾時（虛擬狀態碼）
+CONN_STATUS = 599                             # 其他連線錯誤
+GEMINI_TIMEOUT = 60.0                         # 秒
+
+
 class LLMHTTPError(LLMError):
-    """HTTP 非 200。status 供重試判斷：429（額度）、5xx（暫時性）。"""
+    """HTTP 非 200。status 供重試判斷：429（額度）、5xx（暫時性）、598（逾時）、599（連線錯誤）。"""
 
     def __init__(self, msg: str, status: int, body: str = ""):
         super().__init__(msg)
@@ -54,7 +59,8 @@ class LLMHTTPError(LLMError):
 class GeminiClient:
     provider = "google"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None, session=None, timeout: float = 120):
+    def __init__(self, api_key: str | None = None, model: str | None = None, session=None,
+                 timeout: float = GEMINI_TIMEOUT):
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
         if not self.api_key:
             raise LLMError("缺少 GOOGLE_API_KEY")
@@ -69,8 +75,10 @@ class GeminiClient:
                 "generationConfig": {"temperature": temperature, "responseMimeType": "application/json"}}
         try:
             r = self.session.post(url, params={"key": self.api_key}, json=body, timeout=self.timeout)
+        except requests.Timeout as e:
+            raise LLMHTTPError(f"Gemini 逾時（{self.timeout:.0f} 秒）：{self.model}", TIMEOUT_STATUS) from e
         except requests.RequestException as e:
-            raise LLMHTTPError(f"Gemini 連線失敗：{e}", 599) from e
+            raise LLMHTTPError(f"Gemini 連線失敗：{e}", CONN_STATUS) from e
         if r.status_code != 200:
             raise LLMHTTPError(f"Gemini HTTP {r.status_code}: {r.text[:300]}", r.status_code, r.text[:2000])
         d = r.json()

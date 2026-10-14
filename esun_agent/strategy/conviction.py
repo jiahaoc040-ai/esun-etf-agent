@@ -5,7 +5,9 @@
                高 = 8%、中 = 5.5%（2330：高 15%、中 10%）。單檔硬上限 8%（官方 10%，留 2% 給價格漂移：買進當天漲停 +10%
                且淨值下跌時仍不超過 10%，避免被認定為「加碼造成超限」），2330 上限 20%。
   湊檔數部位   市值前 30 大、且不在高信心名單者，取市值最大的若干檔各 1–2%，使總持股 = 20–24 檔
-               （現有湊檔股仍在前 30 大者優先保留，避免無謂換手）。內部下限 21 檔：建倉當天若有一檔停牌買不到仍有 20 檔。
+               （現有湊檔股仍在前 30 大者優先保留，避免無謂換手）。挑選順序：低重疊（出現在主動型 ETF 前 15 大的比例
+               ≤ filler_max_overlap）優先，同一組內依市值由大到小。內部下限 23 檔（比官方 20 檔多 3 檔緩衝：停牌買不到、
+               停損出場或零股調整都不會跌破 20 檔）。
   現金         目標 3%，區間 2–5%。
   配比         高信心名目權重合計過大 → 等比例縮小；過小 → 在上限內等比例放大（必要時現金拉到 5%）。
   Active Share 前 15 大 vs 任一主動型 ETF 前 15 大，官方 ≥ 15%、內部目標 ≥ 20%：不足時先把重疊的湊檔股換成不重疊的，
@@ -59,7 +61,8 @@ class ConvictionParams:
     filler_pool: int = 30                 # 湊檔數部位：市值前 30 大
     filler_min: float = 0.01
     filler_max: float = 0.02
-    n_total_min: int = 21                 # 官方 20：留 1 檔給「當日停牌買不到」的部位
+    n_total_min: int = 23                 # 官方 20：至少留 3 檔緩衝（停牌買不到、停損出場）
+    filler_max_overlap: float = 0.5       # 湊檔股：出現在超過一半主動型 ETF 前 15 大者排在後面（低重疊優先）
     n_total_max: int = 24
     cash_low: float = 0.02
     cash_target: float = 0.03
@@ -109,13 +112,20 @@ class ConvictionResult:
 # --------------------------------------------------------------------------- 湊檔數部位候選
 
 def filler_candidates(cap: pd.Series, eligible: set[str], picks, p: ConvictionParams,
-                      current_fillers=()) -> list[str]:
-    """市值前 filler_pool 大（限 eligible）中不在 picks 者；現有湊檔股優先，其餘依市值由大到小。"""
+                      current_fillers=(), top15: dict | None = None) -> list[str]:
+    """市值前 filler_pool 大（限 eligible）中不在 picks 者，依序：
+    現有湊檔股（仍在前 30 大、且低重疊者，避免換手）→ 低重疊（主動型 ETF 前 15 大重疊比例 ≤ filler_max_overlap）
+    依市值 → 高重疊依市值。"""
+    from .candidates import etf_overlap_counts
     c = cap.reindex(sorted(eligible)).dropna()
     c = c[c > 0]
     top = [t for t in c.sort_values(ascending=False).index[:p.filler_pool] if t not in picks]
-    keep = [t for t in top if t in set(current_fillers)]
-    return keep + [t for t in top if t not in set(keep)]
+    counts, n_etf = etf_overlap_counts(top15)
+    heavy = {t for t in top if n_etf and counts.get(t, 0) / n_etf > p.filler_max_overlap}
+    cur = set(current_fillers)
+    keep = [t for t in top if t in cur and t not in heavy]
+    light = [t for t in top if t not in heavy and t not in cur]
+    return keep + light + [t for t in top if t in heavy]
 
 
 # --------------------------------------------------------------------------- 權重配置
@@ -231,7 +241,7 @@ def build_portfolio(picks: dict[str, str], cap: pd.Series, eligible: set[str], t
             errors.append(f"{t} 的信心等級需為 high 或 medium")
     if errors:
         return ConvictionResult({}, {}, [], notes, None, errors)
-    order = filler_candidates(cap, eligible, picks, p, current_fillers)
+    order = filler_candidates(cap, eligible, picks, p, current_fillers, top15)
     try:
         w, fillers, _ = _fit(picks, order, p, notes)
     except ConvictionError as e:

@@ -1,6 +1,6 @@
 """daily_run 端到端（mock 收集器與 mock LLM，不連網）：連續 3 個交易日 0 ERROR、官方帳務對帳、清晨重產、略過與失敗路徑。"""
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -33,9 +33,11 @@ class Collector:
         inp = load_inputs(T)
         if steps and set(steps) == {"taifex", "us"}:
             inp = json.loads(json.dumps(inp))
-            if self.sox is not None:
+            if self.sox not in (None, "missing"):
                 inp["us"]["quotes"]["SOX"]["chg_pct"] = self.sox
                 inp["us"]["content_as_of"] = f"{T}T04:00:00+08:00"
+            if self.sox == "missing":
+                inp.pop("us")
             if self.tx is not None:
                 inp["taifex"]["chg_pct"] = self.tx
                 inp["taifex"]["session_date"] = T
@@ -54,7 +56,8 @@ def paths(tmp_path, monkeypatch):
 
 def go(paths, d, llm=None, **kw):
     out = []
-    r = dr.run(now=kw.pop("now", evening(d)), paths=paths, collector=kw.pop("collector", Collector()), holidays=HOL,
+    now = kw.pop("now", None) or evening(d)
+    r = dr.run(now=now, paths=paths, collector=kw.pop("collector", Collector()), holidays=HOL,
                llm_factory=lambda: llm or FakeLLM([conviction_llm()]), echo=out.append, do_archive=False, **kw)
     return r, "\n".join(map(str, out))
 
@@ -209,3 +212,86 @@ def test_launchd_plists():
     assert ev["EnvironmentVariables"]["TZ"] == "Asia/Taipei"
     for f in ("install.sh", "uninstall.sh"):
         assert "launchctl" in (d / f).read_text()
+
+
+# ------------------------------------------------------------------ 決策日判斷
+def at(s):
+    return datetime.fromisoformat(s + "+08:00")
+
+
+def test_decide_dates_rules():
+    hol = HOL
+    # 一般晚上：T = 明天、D = 今天
+    assert dr.decide_dates(at("2026-09-29T20:30:00"), hol)[:2] == (date(2026, 9, 30), date(2026, 9, 29))
+    # 交易日 14:30 前：今天收盤未公布 → D = 前一交易日、T = D 的下一交易日（今天）
+    T, D, note = dr.decide_dates(at("2026-09-29T07:30:00"), hol)
+    assert (T, D) == (date(2026, 9, 29), date(2026, 9, 24)) and "早於 14:30" in note
+    assert dr.decide_dates(at("2026-09-29T14:29:00"), hol)[1] == date(2026, 9, 24)
+    assert dr.decide_dates(at("2026-09-29T14:30:00"), hol)[1] == date(2026, 9, 29)
+    # 假日：D 是前一交易日，不受 14:30 影響
+    assert dr.decide_dates(at("2026-09-28T10:00:00"), hol)[:2] == (date(2026, 9, 29), date(2026, 9, 24))
+    # --trade-date：D = T 的前一個交易日（不看現在時間）
+    assert dr.decide_dates(at("2026-09-29T07:00:00"), hol, "2026-09-30")[:2] == (date(2026, 9, 30), date(2026, 9, 29))
+    assert dr.decide_dates(at("2026-10-01T22:00:00"), hol, "2026-09-29")[:2] == (date(2026, 9, 29), date(2026, 9, 24))
+
+
+def test_early_morning_run_builds_todays_plan_from_previous_close(paths):
+    r, out = go(paths, "", now=at("2026-09-29T07:30:00"))
+    assert r.code == 0 and r.trade_date == "2026-09-29" and "D-Plan_TEAM_042_2026-09-29.json" in r.dplan_path.name
+    assert "決策日 D=2026-09-24" in out and "早於 14:30" in out
+
+
+def test_after_deadline_before_close_refuses_without_force(paths):
+    r, out = go(paths, "", now=at("2026-09-29T10:00:00"))
+    assert r.code == 1 and r.dplan_path is None and "繳交截止" in r.errors[0] and "今晚重跑" in r.errors[0]
+    r, out = go(paths, "", now=at("2026-09-29T10:00:00"), force=True)
+    assert r.code == 0 and r.trade_date == "2026-09-29"
+
+
+def test_trade_date_option_uses_previous_trading_day(paths):
+    r, out = go(paths, "", now=at("2026-10-01T09:30:00"), trade_date="2026-09-30")
+    assert r.code == 0 and "決策日 D=2026-09-29" in out and r.dplan_path.name.endswith("2026-09-30.json")
+
+
+def test_market_not_ready_message(paths):
+    class NotReady(Collector):
+        def __call__(self, D, raw_dir, **kw):
+            return CollectResult(D=D.isoformat(), inputs={"events": []}, warnings=["[market] 失敗：MarketNotReady"],
+                                 market_ok=False, market_not_ready=True)
+    r = dr.run(now=evening("2026-10-06"), paths=paths, collector=NotReady(), holidays=HOL, echo=None, do_archive=False,
+               llm_factory=lambda: FakeLLM([conviction_llm()]))
+    assert r.code == 1 and "尚未公布" in r.errors[0] and "稍後重跑" in r.errors[0]
+
+
+def test_morning_without_us_data_uses_taifex_only(paths):
+    go(paths, "2026-09-28")
+    morning = datetime.fromisoformat("2026-09-29T06:50:00+08:00")
+    r, out = go(paths, "2026-09-29", morning=True, now=morning, collector=Collector(sox="missing", tx=-0.4))
+    assert r.regenerated is False and "只用台指期夜盤判斷" in out and "無需更新" in out
+    r, out = go(paths, "2026-09-29", morning=True, now=morning, collector=Collector(sox="missing", tx=-2.6))
+    assert r.regenerated is True and "台指期夜盤 -2.60%" in out and "只用台指期夜盤判斷" in out
+
+
+def test_warnings_grouped_by_source_one_line_each():
+    ws = ["[us] 失敗：RuntimeError: 抓取失敗 https://x\nTraceback (most recent call last):\n  File ...",
+          "SPX 全部來源失敗（FRED：HTTP 503；Stooq：No data），缺值",
+          "重大訊息（上櫃）t187ap04_O 回應不是 JSON（前 200 字：<!DOCTYPE html> <html lang=\"zh-Hant-TW\">" + "x" * 300 + "）",
+          "上櫃日行情 OpenAPI 失敗（ChunkedEncodingError: IncompleteRead），改用 afterTrading/otc?date=2026/10/26",
+          "找不到官方帳務 runs/official/2026-10-26.json：改用自記帳推估",
+          "收件匣 a.md：缺少同名 .meta.json，略過",
+          "台指期夜盤抓取失敗：timeout",
+          "SPX 全部來源失敗（FRED：HTTP 503；Stooq：No data），缺值",          # 重複
+          "怪訊息"]
+    g = dr.group_warnings(ws)
+    assert list(g) == ["收件匣", "重大訊息", "台指期夜盤", "美股", "帳務", "行情／法人", "其他"]
+    assert len(g["美股"]) == 2 and g["行情／法人"][0].startswith("上櫃日行情")
+    lines = dr.format_warnings(ws)
+    assert len(lines) == 8 and all("\n" not in x and len(x) <= dr.WARNING_MAX + 20 for x in lines)
+    assert lines[0].startswith("  [收件匣] ") and any(x.endswith("…") for x in lines)
+
+
+def test_summary_prints_grouped_warnings(paths):
+    r, out = go(paths, "2026-09-28")
+    assert "流程警告（" in out and "依來源" in out and "  [帳務] 找不到官方帳務" in out and "  [其他] 測試：收集警告" in out
+    tail = out[out.index("流程警告（"):]
+    assert all(len(l) <= dr.WARNING_MAX + 20 for l in tail.splitlines()[1:] if l.startswith("  ["))

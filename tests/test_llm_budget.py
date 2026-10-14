@@ -184,3 +184,34 @@ def test_smoke_test_script(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "gemini-3.8-flash-001" in out and "gemini-3.5-flash-lite-001" in out and "tokens：輸入 100" in out
     assert p.calls == 1 and f.calls == 1 and c.sleeps == [13.0]
+
+
+def test_gemini_timeout_is_60s_and_primary_timeout_switches_immediately(tmp_path):
+    import requests
+
+    class Sess:
+        def __init__(self):
+            self.timeouts = []
+
+        def post(self, *a, timeout=None, **k):
+            self.timeouts.append(timeout)
+            raise requests.ReadTimeout("read timed out")
+    s = Sess()
+    g = L.GeminiClient(api_key="k", model="gemini-3.8-flash", session=s)
+    assert g.timeout == 60
+    with pytest.raises(L.LLMHTTPError) as e:
+        g.generate("s", "u")
+    assert e.value.status == L.TIMEOUT_STATUS and s.timeouts == [60] and "逾時" in str(e.value)
+    p, f = Script("main", [L.LLMHTTPError("逾時", L.TIMEOUT_STATUS)]), Script("lite", ["ok"])
+    q, c = qc(tmp_path, p, f)
+    r = q.generate("s", "u")
+    assert p.calls == 1 and f.calls == 1 and r.model == "lite-001" and 15 not in c.sleeps   # 不重試主模型、不退避
+    assert any("逾時" in e.get("reason", "") for e in q.log if e.get("event") == "switch_to_fallback")
+    q.generate("s", "u")
+    assert p.calls == 1                                                # 之後都用備援
+
+
+def test_make_client_fallback_inherits_60s_timeout(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "g")
+    c = L.make_client("gemini")
+    assert c.primary.timeout == 60 and c.fallback.timeout == 60

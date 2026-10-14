@@ -1,4 +1,6 @@
-"""MOPS 當日重大訊息（限 150 檔）：TWSE OpenAPI t187ap04_L（上市）、TPEx OpenAPI mopsfe_t187ap04_O（上櫃）。
+"""MOPS 當日重大訊息（限 150 檔）：TWSE OpenAPI t187ap04_L（上市）、TPEx OpenAPI t187ap04_O（上櫃）。
+
+上櫃端點依序嘗試 TPEX_NEWS_URLS；回應不是 JSON（例如 HTML 錯誤頁）時記一則警告（附前 200 字），換下一個，不讓整段失敗。
 
 欄位（OpenAPI 為中文鍵，部分鍵尾端有空白）：出表日期、發言日期（民國 1151026）、發言時間（173005 或 17:30:05）、
 公司代號、公司名稱、主旨、符合條款、事實發生日、說明。
@@ -16,7 +18,9 @@ from .calendar import roc_to_date
 from .http import Fetcher, decode
 
 TWSE_NEWS_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap04_L"
-TPEX_NEWS_URL = "https://www.tpex.org.tw/openapi/v1/mopsfe_t187ap04_O"
+TPEX_NEWS_URLS = ("https://www.tpex.org.tw/openapi/v1/t187ap04_O",          # TPEx OpenAPI：上櫃公司每日重大訊息
+                  "https://www.tpex.org.tw/openapi/v1/mopsfe_t187ap04_O")
+TPEX_NEWS_URL = TPEX_NEWS_URLS[0]
 MOPS_NEWS_PAGE = "https://mops.twse.com.tw/mops/#/web/t05sr01_1"
 CUTOFF = "19:30:00"
 
@@ -72,14 +76,40 @@ def select_day(items: list[dict], D: date, cutoff: str = CUTOFF) -> tuple[list[d
     return [n for n in day if n["time"] <= cutoff], [n for n in day if n["time"] > cutoff]
 
 
+def load_json_list(raw: bytes, label: str) -> tuple[list[dict] | None, str | None]:
+    """回應 → JSON 陣列。不是 JSON（或不是陣列）時回傳 (None, 一行警告＋前 200 字)。"""
+    text = decode(raw)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        head = " ".join(text[:200].split())
+        return None, f"{label} 回應不是 JSON（前 200 字：{head}）"
+    if isinstance(data, dict):                            # 少數端點包一層 {"data": [...]}
+        data = data.get("data") if isinstance(data.get("data"), list) else None
+    if not isinstance(data, list):
+        return None, f"{label} 回應不是 JSON 陣列"
+    return data, None
+
+
 def collect_news(fetcher: Fetcher, D: date) -> tuple[list[dict], list[str]]:
-    """回傳 (events, warnings)。任一市場失敗只記警告。"""
+    """回傳 (events, warnings)。任一市場失敗只記警告（單行）。"""
     events, warns = [], []
-    for label, url in (("上市", TWSE_NEWS_URL), ("上櫃", TPEX_NEWS_URL)):
-        try:
-            items = parse_news(json.loads(decode(fetcher.get(url, name=f"news_{label}_{D:%Y%m%d}.json"))))
-        except Exception as e:  # noqa: BLE001
-            warns.append(f"重大訊息（{label}）抓取失敗：{e}")
+    for label, urls in (("上市", (TWSE_NEWS_URL,)), ("上櫃", TPEX_NEWS_URLS)):
+        items = None
+        for url in urls:
+            name = url.rsplit("/", 1)[-1]
+            try:
+                raw = fetcher.get(url, name=f"news_{label}_{name}_{D:%Y%m%d}.json")
+            except Exception as e:  # noqa: BLE001
+                warns.append(f"重大訊息（{label}）{name} 抓取失敗：{str(e).splitlines()[0][:120]}")
+                continue
+            data, w = load_json_list(raw, f"重大訊息（{label}）{name}")
+            if w:
+                warns.append(w)
+                continue
+            items = parse_news(data)
+            break
+        if items is None:
             continue
         ok, late = select_day(items, D)
         events += [news_event(n, url) for n in ok]

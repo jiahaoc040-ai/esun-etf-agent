@@ -143,10 +143,10 @@ def test_no_new_freezes_current_weights_and_exits_go_to_cash():
     r = cv.build_portfolio(new, cap_series(), set(TICKERS), None, P, current=cur, no_new=True, exits=[names[0]])
     assert r.errors == [] and TICKERS[45] not in r.weights and names[0] not in r.weights
     assert all(r.weights[t] == pytest.approx(cur[t]) for t in names[1:])
-    short = len(cur) - 1 < P.n_total_min                           # 出場後不足 21 檔 → 補 1% 湊檔
+    short = len(cur) - 1 < P.n_total_min                           # 出場後不足下限 → 補 1% 湊檔
     assert any(n.startswith("no_new_filler_added") for n in r.notes) == short and r.n_hold >= P.n_total_min
     assert r.cash == pytest.approx(1 - sum(cur.values()) + cur[names[0]] - (P.filler_min if short else 0.0))
-    # 剛好 21 檔時出場 1 檔 → 必須補湊檔
+    # 剛好在下限時出場 1 檔 → 必須補湊檔
     cur21 = dict(list(cur.items())[:P.n_total_min])
     r21 = cv.build_portfolio(new, cap_series(), set(TICKERS), None, P, current=cur21, no_new=True, exits=[names[0]])
     assert r21.errors == [] and r21.n_hold == P.n_total_min and any(n.startswith("no_new_filler_added") for n in r21.notes)
@@ -295,7 +295,8 @@ def test_window_helpers():
 # ------------------------------------------------------------------ 宣告檔
 def test_declaration_v2_matches_code():
     d = load_declaration()
-    assert d["version"] == "2.1.0" and d["status"] == "final"
+    assert d["version"] == "2.2.0" and d["status"] == "final"
+    assert d["portfolio_rules"]["n_total_min"] == 23 and d["portfolio_rules"]["n_total_max"] == 24
     r = d["portfolio_rules"]
     assert (r["w_high"], r["w_mid"], r["cap_other"], r["cap_tsmc"]) == (0.08, 0.055, 0.08, 0.20)
     assert (r["w_tsmc_high"], r["w_tsmc_mid"], r["keep_rank"]) == (0.15, 0.10, 30)
@@ -327,6 +328,31 @@ def test_no_new_redeploys_cash_when_many_stop_losses():
     r = cv.build_portfolio(keep, cap_series(), set(TICKERS), None, P, current=r0.weights, no_new=True, exits=exits)
     assert r.errors == [] and any(n.startswith("no_new_cash_redeployed") for n in r.notes)
     assert r.cash <= 0.22 and not set(exits) & set(r.weights) and r.n_hold >= P.n_total_min
-    added = set(r.weights) - set(r0.weights)                          # 新名稱只可能是為了湊滿 21 檔的湊檔股
+    added = set(r.weights) - set(r0.weights)                          # 新名稱只可能是為了湊滿下限的湊檔股
     assert added and all(f"no_new_filler_added:{t}" in r.notes for t in added) and not added & set(keep)
     assert all(x <= P.cap(t) + 1e-12 for t, x in r.weights.items())
+
+
+def test_fillers_target_23_to_24_holdings_with_3_name_buffer():
+    for names, n_high in ((TICKERS[30:40], 0), (TICKERS[30:41], 5), (TICKERS[30:42], 12), (TICKERS[30:42], 0)):
+        r = cv.build_portfolio(picks_of(names, n_high), cap_series(), set(TICKERS), None, P)
+        assert r.errors == [] and 23 <= r.n_hold <= 24, (len(names), n_high, r.n_hold)
+        assert r.n_hold - 20 >= 3                                                  # 至少 3 檔緩衝
+        assert all(P.filler_min - 1e-9 <= r.weights[t] <= P.filler_max + 1e-9 for t in r.fillers)
+    assert P.n_total_min == 23
+
+
+def test_fillers_prefer_large_cap_with_low_etf_overlap():
+    names = TICKERS[30:41]
+    heavy = TICKERS[:3]                                                          # 市值前 3 大，出現在所有 ETF 前 15 大
+    etfs = {f"E{i}": {**{t: 0.1 for t in heavy}, **{t: 0.05 for t in TICKERS[50:52]}} for i in range(4)}
+    order = cv.filler_candidates(cap_series(), set(TICKERS), set(names), P, top15=etfs)
+    assert order[:3] == TICKERS[3:6] and order[-3:] == heavy                     # 低重疊依市值在前，高重疊排最後
+    assert len(order) == P.filler_pool - len(set(names) & set(TICKERS[:P.filler_pool]))
+    r = cv.build_portfolio(picks_of(names), cap_series(), set(TICKERS), etfs, P)
+    assert r.errors == [] and not set(heavy) & set(r.fillers)
+    # 現有湊檔股：低重疊者保留在前（避免換手）；高重疊者即使現在持有也排到後面
+    order2 = cv.filler_candidates(cap_series(), set(TICKERS), set(names), P, current_fillers=[TICKERS[20], heavy[0]], top15=etfs)
+    assert order2[0] == TICKERS[20] and order2.index(heavy[0]) >= len(order2) - 3
+    # 沒有 ETF 資料：純依市值
+    assert cv.filler_candidates(cap_series(), set(TICKERS), set(names), P)[:3] == heavy

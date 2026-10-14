@@ -1,13 +1,19 @@
 """共用 HTTP：重試、原始回應存檔（--save-raw）、best-effort 的 Wayback Machine 存檔（archive_url）。"""
 from __future__ import annotations
 
+import http.client
 import re
 import time
 from pathlib import Path
 
 import requests
+from urllib3.exceptions import ProtocolError
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) esun-etf-agent/2"
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/126.0.0.0 Safari/537.36")
+BROWSER_HEADERS = {"User-Agent": BROWSER_UA, "Accept": "application/json, text/plain, */*",
+                   "Accept-Language": "en-US,en;q=0.9"}
 WAYBACK_SAVE = "https://web.archive.org/save/"
 
 
@@ -18,25 +24,40 @@ class Fetcher:
         self.session.headers.setdefault("User-Agent", UA)
         self.raw_dir, self.retries, self.timeout, self.sleep = raw_dir, retries, timeout, sleep
 
-    def get(self, url: str, params: dict | None = None, *, data: dict | None = None, name: str | None = None) -> bytes:
-        """GET（data 不為 None 時 POST）。成功時把原始內容存到 raw_dir/name（未給 name 則由 URL 推導）。"""
+    def get(self, url: str, params: dict | None = None, *, data: dict | None = None, name: str | None = None,
+            headers: dict | None = None, retries: int | None = None, backoff: float = 2.0,
+            retry_status: tuple = (429, 500, 502, 503, 504)) -> bytes:
+        """GET（data 不為 None 時 POST）。成功時把原始內容存到 raw_dir/name（未給 name 則由 URL 推導）。
+        連線錯誤、讀取中斷（IncompleteRead／ChunkedEncodingError）與 retry_status 會以 backoff × 2^n 秒退避重試；
+        其他 HTTP 錯誤（404 等）直接失敗。"""
+        tries = self.retries if retries is None else retries
         last: Exception | None = None
-        for attempt in range(self.retries):
+        for attempt in range(tries):
             if self.sleep:
                 time.sleep(self.sleep)
             try:
-                if data is None:
-                    r = self.session.get(url, params=params, timeout=self.timeout)
-                else:
-                    r = self.session.post(url, params=params, data=data, timeout=self.timeout)
+                kw = {"params": params, "timeout": self.timeout}
+                if headers:
+                    kw["headers"] = headers
+                r = (self.session.get(url, **kw) if data is None else self.session.post(url, data=data, **kw))
+                status = getattr(r, "status_code", 200)
+                if status >= 400 and status not in retry_status:
+                    r.raise_for_status()
+                    raise requests.HTTPError(f"HTTP {status}")
                 r.raise_for_status()
-                self.save_raw(name or raw_name(url, params, data), r.content)
-                return r.content
-            except requests.RequestException as e:
+                content = r.content
+                self.save_raw(name or raw_name(url, params, data), content)
+                return content
+            except requests.HTTPError as e:
+                status = getattr(getattr(e, "response", None), "status_code", None) or _status_of(e)
                 last = e
-                if attempt + 1 < self.retries:
-                    time.sleep(min(2 ** attempt, 8))
-        raise RuntimeError(f"抓取失敗 {url}: {last}") from last
+                if status is not None and status not in retry_status:
+                    break
+            except (requests.RequestException, http.client.IncompleteRead, ProtocolError) as e:
+                last = e
+            if attempt + 1 < tries:
+                time.sleep(backoff * 2 ** attempt)
+        raise RuntimeError(f"抓取失敗 {url}: {type(last).__name__}: {last}") from last
 
     def save_raw(self, name: str, content: bytes) -> Path | None:
         if self.raw_dir is None:
@@ -45,6 +66,11 @@ class Fetcher:
         p = self.raw_dir / name
         p.write_bytes(content)
         return p
+
+
+def _status_of(e: Exception) -> int | None:
+    m = re.search(r"HTTP (\d{3})", str(e))
+    return int(m.group(1)) if m else None
 
 
 def raw_name(url: str, params: dict | None = None, data: dict | None = None) -> str:

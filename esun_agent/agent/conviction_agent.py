@@ -368,7 +368,7 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
     if filler_obs and any(t in touched for t in fillers):
         fill_inf = add_inf([filler_obs],
                            f"湊檔數部位：高信心名單之外，取市值前 {ConvictionParams().filler_pool} 大中市值最大的 {len(fillers)} 檔、每檔約 "
-                           f"{sum(target.get(t, 0.0) for t in fillers) / len(fillers):.1%}，使總持股維持 21–24 檔並分散單一事件風險；"
+                           f"{sum(target.get(t, 0.0) for t in fillers) / len(fillers):.1%}，優先選主動型 ETF 重疊較低者，使總持股維持 23–24 檔並分散單一事件風險；"
                            "這些部位不代表看多，只是滿足持股檔數規則的低成本配置。",
                            f"湊檔數部位 {len(fillers)} 檔")
     base_inf = None

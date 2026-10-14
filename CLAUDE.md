@@ -31,10 +31,10 @@
 - `esun_agent/orders.py` 官方委託公式
 - `esun_agent/ledger.py` 記帳（成交、NAV、與官方庫存對帳；除權息不入帳、分割才調股數）
 - **每日流程（T5，在 SS 的 Mac 上跑）**
-  - `esun_agent/collect/`：`calendar.py`（TWSE 休市日）、`revenue.py`（MOPS 月營收 sii/otc，YoY/MoM、24 個月新高，存 `data/revenue/`）、`news.py`（MOPS 當日重大訊息，限 150 檔、發言時間 ≤ D 19:30）、`taifex.py`（台指期夜盤 CSV）、`us.py`（SOX/NDX/SPX/TSM：Stooq → Yahoo 備援）、`daily.py`（`collect_day`：每步失敗只警告、降級為缺值）。parser 都有 `tests/fixtures/collect/` 測試；`scripts/collect_data.py --save-raw`
-  - `esun_agent/agent/llm_budget.py` `QuotaClient`：Gemini 主模型 `LLM_MODEL`（預設 gemini-3.8-flash）＋備援 `LLM_FALLBACK_MODEL`（gemini-3.5-flash-lite）、間隔 ≥ 13 秒、429/5xx 退避、主模型連 3 次失敗／額度用完改備援、單日 10 次、提示詞 > 200K 先縮減（`conviction_agent.fit_prompts`）、`model_version` 記實際模型；`scripts/llm_smoke_test.py`
+  - `esun_agent/collect/`：`calendar.py`（TWSE 休市日）、`revenue.py`（MOPS 月營收 sii/otc，YoY/MoM、24 個月新高，存 `data/revenue/`）、`news.py`（MOPS 當日重大訊息，限 150 檔、發言時間 ≤ D 19:30；上櫃 TPEx OpenAPI t187ap04_O，非 JSON 回應只記單行警告）、`taifex.py`（台指期夜盤 CSV）、`us.py`（SPX/NDX：FRED；SOX/TSM：Yahoo（瀏覽器 UA、429 退避 2 次）→ Nasdaq API；Stooq 最後）、`daily.py`（`collect_day`：每步失敗只警告、降級為缺值；上櫃日行情 OpenAPI 失敗改用 afterTrading/otc 依日期查詢並核對日期）。parser 都有 `tests/fixtures/collect/` 測試；`scripts/collect_data.py --save-raw`
+  - `esun_agent/agent/llm_budget.py` `QuotaClient`：Gemini 主模型 `LLM_MODEL`（預設 gemini-3.8-flash）＋備援 `LLM_FALLBACK_MODEL`（gemini-3.5-flash-lite）、間隔 ≥ 13 秒、429/5xx 退避、讀取逾時 60 秒、主模型逾時一次或連 3 次失敗／額度用完改備援、單日 10 次、提示詞 > 200K 先縮減（`conviction_agent.fit_prompts`）、`model_version` 記實際模型；`scripts/llm_smoke_test.py`
   - `esun_agent/official.py`：官方帳務 `runs/official/<D>.json`（team_id、nav、cash、holdings），`scripts/new_official_template.py` 產生草稿 `<D>.draft.json`；自記帳 `runs/state/ledger.json`，對帳差異以官方為準
-  - `esun_agent/daily_run.py`＋`scripts/daily_run.py`（`--morning`、`--force`、`--trade-date`）：輸出 `runs/<T>/D-Plan_<TEAM_ID>_<T>.json`，原始資料／LLM 輸入輸出／log 在 `runs/<T>/raw/`；TEAM_ID 讀環境變數（未設定用 TEAM_TBD）
+  - `esun_agent/daily_run.py`＋`scripts/daily_run.py`（`--morning`、`--force`、`--trade-date`；14:30 前 D 取前一交易日、T＝D 的下一交易日；--trade-date 時 D＝T 的前一交易日；警告依來源分組、每則一行）：輸出 `runs/<T>/D-Plan_<TEAM_ID>_<T>.json`，原始資料／LLM 輸入輸出／log 在 `runs/<T>/raw/`；TEAM_ID 讀環境變數（未設定用 TEAM_TBD）
   - `scripts/launchd/`：週日～週四 20:30 晚上流程、週一～週五 06:50 清晨檢查；操作手冊見 README
 - `esun_agent/data/inbox.py` 人工收件匣 `data/inbox/<交易日>/`（文件＋同名 .meta.json → events；缺 meta／url、或非金融機構來源含買進／賣出／加碼／減碼／建議等指示性語句 → 略過並警告；全部複製到 runs/<交易日>/raw/inbox/）。`scripts/ingest_inbox.py` 預覽；daily_run 以 `load_inbox` ＋ `merge_into_inputs` 併入 DayContext.inputs
 - `esun_agent/data/etf_holdings.py` 主動型 ETF 持股（MoneyDJ 全部持股頁 Basic0007B → 前 15 大，存 `data/etf_top15/`）
@@ -42,7 +42,7 @@
 - `esun_agent/dplan_validate.py` 提交前驗證（schema + C1/C2/C6/C9/C11/C12/C13/C14 + 覆蓋）
 - **正式策略 v2（集中主題＋事件驅動）**
   - `esun_agent/strategy/candidates.py` 每日候選池（約 30 檔）：投信 5/10 日淨買超（成交值標準化）、20 日相對強度、成交值放大，減主動型 ETF 前 15 大重疊扣分；2330 固定列入。參數 `CandidateParams`
-  - `esun_agent/strategy/conviction.py` 權重換算（高 8%／中 5.5%，2330 高 15%／中 10%，單檔上限 8%、2330 20%）、湊檔數部位（市值前 30 大各 1–2%，總持股 21–24）、現金 2–5%、Active Share 修正（內部 ≥ 20%）、無交易帶 1.5%、換股紀律 `discipline`（持有 ≥ 3 日、每日最多換 4 檔、停損 −12%、事件前一日凍結）。參數 `ConvictionParams`
+  - `esun_agent/strategy/conviction.py` 權重換算（高 8%／中 5.5%，2330 高 15%／中 10%，單檔上限 8%、2330 20%）、湊檔數部位（市值前 30 大各 1–2%，低重疊優先，總持股 23–24，比 20 檔下限多 3 檔緩衝）、現金 2–5%、Active Share 修正（內部 ≥ 20%）、無交易帶 1.5%、換股紀律 `discipline`（持有 ≥ 3 日、每日最多換 4 檔、停損 −12%、事件前一日凍結）。參數 `ConvictionParams`
   - `config/event_calendar.json` FOMC／NVIDIA 財報／美國大選（estimated=true 者要在公告後更新）
   - `esun_agent/agent/conviction_agent.py` 正式 D-Plan 組裝器 `assemble_conviction_day`：LLM 只輸出 market_view、picks（10–12 檔＋high/medium＋obs_ids）、exits；程式換算權重；最多 3 次重試，失敗 → 凍結既有名單 → 再不行改用合規基準 A。狀態 `runs/state/conviction.json`（`conviction_state.py`）
   - `esun_agent/conviction_backtest.py`＋`scripts/run_conviction_backtest.py` 代理回測（候選池前 11 名代替 LLM；預設遲滯：已持有且名次 ≤ 30 續抱）→ `docs/conviction_backtest.md/.json`

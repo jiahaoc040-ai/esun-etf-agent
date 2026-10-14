@@ -3,6 +3,7 @@
 QuotaClient(primary, fallback)：
   - 兩次呼叫間隔 ≥ LLM_MIN_INTERVAL（預設 13 秒；跨程序，記在 runs/state/llm_usage.json）。
   - 429／5xx／連線錯誤：指數退避（15、30、60 秒…）重試，每次 generate 最多 max_tries 次 HTTP 呼叫。
+  - 主模型逾時（Gemini 讀取逾時 60 秒）一次 → 直接改用備援，不再重試主模型。
   - 主模型連續失敗 3 次，或回應顯示當日額度用完（RESOURCE_EXHAUSTED 且為 per-day），或本機紀錄已達 RPD
     → 本次程序之後都改用備援模型。
   - 單日（台北日期）呼叫上限 LLM_DAILY_CALL_LIMIT（預設 10）：每一次 HTTP 呼叫都計入，達上限丟 LLMError。
@@ -22,7 +23,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..config import ROOT
-from .llm import LLMError, LLMHTTPError, LLMResult
+from .llm import CONN_STATUS, TIMEOUT_STATUS, LLMError, LLMHTTPError, LLMResult
 
 USAGE_PATH = ROOT / "runs" / "state" / "llm_usage.json"
 PT, TPE = ZoneInfo("America/Los_Angeles"), ZoneInfo("Asia/Taipei")
@@ -152,11 +153,13 @@ class QuotaClient:
                     self.consecutive_failures += 1
                     if status == 429 and re.search(r"per.?day|PerDay|daily", body, re.I):
                         self._switch("主模型當日額度用完（429 per-day）")
+                    elif status == TIMEOUT_STATUS:
+                        self._switch(f"主模型 {client.model} 逾時，直接改用備援（不再重試主模型）")
                     elif status == 404:
                         self._switch(f"主模型 {client.model} 不存在（404，請確認 AI Studio 的模型 ID）")
                     elif self.consecutive_failures >= self.max_fail:
                         self._switch(f"主模型連續失敗 {self.consecutive_failures} 次")
-                retriable = status in (429, 599) or status >= 500
+                retriable = status in (429, CONN_STATUS, TIMEOUT_STATUS) or status >= 500
                 if not retriable and not (client is self.primary and self.use_fallback):
                     raise
                 if attempt + 1 < self.max_tries and not (self.use_fallback and client is self.primary):

@@ -1,7 +1,7 @@
 {
- "version": "2.1.0",
+ "version": "2.2.0",
  "status": "final",
- "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
+ "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大；v2.2.0 總持股 23–24 檔、湊檔低重疊優先）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
  "etf": {
   "name": "主動台灣核心優選 AI",
   "name_status": "final",
@@ -10,7 +10,7 @@
  },
  "theme": {
   "title": "AI Agent 依公開事件集中持有 10 至 12 檔高信心台股，追求明顯偏離大盤的超額報酬",
-  "summary": "每日由程式從 150 檔篩出約 30 檔候選（投信 5／10 日淨買超、20 日相對強度、成交值放大，並對主動型 ETF 重疊扣分），AI Agent 閱讀月營收、財報、法說會、投信連買與重大訊息後挑出 10–12 檔高信心股票並給信心等級，程式換算為 8%／5.5% 的集中部位；其餘以市值前 30 大小額湊足持股檔數。"
+  "summary": "每日由程式從 150 檔篩出約 30 檔候選（投信 5／10 日淨買超、20 日相對強度、成交值放大，並對主動型 ETF 重疊扣分），AI Agent 閱讀月營收、財報、法說會、投信連買與重大訊息後挑出 10–12 檔高信心股票並給信心等級，程式換算為 8%／5.5% 的集中部位；其餘以市值前 30 大中與主動型 ETF 重疊較低的大型權值股小額湊足 23–24 檔持股。"
  },
  "philosophy": [
   "超額報酬來自集中：只有 10–12 檔高信心部位，每檔 5.5%–8%，刻意與市值加權大盤拉開距離；不追求貼近指數。",
@@ -38,7 +38,8 @@
   "filler_pool": 30,
   "filler_min": 0.01,
   "filler_max": 0.02,
-  "n_total_min": 21,
+  "n_total_min": 23,
+  "filler_max_overlap": 0.5,
   "n_total_max": 24,
   "cash_low": 0.02,
   "cash_target": 0.03,

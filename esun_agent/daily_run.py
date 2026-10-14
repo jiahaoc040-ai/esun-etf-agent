@@ -16,7 +16,7 @@ import shutil
 import sys
 import traceback
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -42,6 +42,8 @@ from .universe import load_universe
 
 TZ = timezone(timedelta(hours=8))
 RUNS_DIR = ROOT / "runs"
+MARKET_READY = time(14, 30)      # 當天收盤行情最早可取得的時間（台灣時間）
+SUBMIT_DEADLINE = time(8, 55)    # 交易日 T 當天的繳交截止
 MORNING_THRESHOLD = 2.0          # SOX 或台指期夜盤 |變動| > 2% → 重新產生
 MAX_SUBMISSIONS = 25
 
@@ -122,6 +124,26 @@ def holidays_for(today: date, fetcher: Fetcher | None, warnings: list[str]) -> s
     return got
 
 
+def decide_dates(now: datetime, hol: set[str], trade_date: str | None = None) -> tuple[date, date, str | None]:
+    """回傳 (交易日 T, 決策日 D, 說明或 None)。
+    - --trade-date 指定：D = T 的前一個交易日。
+    - 否則 T = 今天之後的下一個交易日、D = T 的前一個交易日（通常就是今天）；但若 D 是今天且現在早於 14:30
+      （今天收盤行情尚未公布），D 改取前一個交易日，T 隨之改為 D 的下一個交易日（即今天），讓 D 與 T 相鄰——
+      否則 D-Plan 會用「不含今天成交」的庫存下單（可能超賣，C13）。"""
+    today = now.date()
+    if trade_date:
+        T = date.fromisoformat(trade_date)
+        return T, cal.prev_trading_day(T, hol, inclusive=False), None
+    T = cal.next_trading_day(today, hol)
+    D = cal.prev_trading_day(T, hol, inclusive=False)
+    if D == today and now.time() < MARKET_READY:
+        D = cal.prev_trading_day(today, hol, inclusive=False)
+        T = cal.next_trading_day(D, hol)
+        return T, D, (f"現在 {now:%H:%M} 早於 {MARKET_READY:%H:%M}，今天 {today} 的收盤行情尚未公布：決策日 D 改用前一個交易日 {D}，"
+                      f"交易日 T = {T}")
+    return T, D, None
+
+
 # --------------------------------------------------------------------------- 帳務
 
 def accounts(D: str, panel, paths: Paths, team: str, log: Log, warnings: list[str]):
@@ -159,6 +181,43 @@ def accounts(D: str, panel, paths: Paths, team: str, log: Log, warnings: list[st
 
 
 # --------------------------------------------------------------------------- 摘要
+
+# (來源標籤, 關鍵字)：依序比對，第一個命中者為該則警告的來源
+WARNING_SOURCES = [
+    ("收件匣", ("收件匣",)),
+    ("重大訊息", ("重大訊息", "[news]")),
+    ("月營收", ("月營收", "[revenue]")),
+    ("台指期夜盤", ("台指期", "夜盤", "[taifex]")),
+    ("美股", ("美股", "SOX", "NDX", "SPX", "TSM", "[us]")),
+    ("ETF 持股", ("ETF", "[etf]")),
+    ("帳務", ("官方", "自記帳", "對帳", "TEAM_ID", "帳務", "team_id")),
+    ("LLM", ("LLM", "降級", "模型")),
+    ("行情／法人", ("行情", "T86", "三大法人", "法人", "[market]", "[inst]")),
+    ("日曆／提交", ("休市", "交易日", "繳交", "提交", "版本", "D-Plan")),
+]
+WARNING_MAX = 110
+
+
+def one_line(msg: str, width: int = WARNING_MAX) -> str:
+    s = " ".join(str(msg).split())
+    return s if len(s) <= width else s[:width - 1] + "…"
+
+
+def group_warnings(warnings: list[str]) -> dict[str, list[str]]:
+    """依來源分組（保留來源順序），每則縮成一行；完全相同的訊息只留一則。"""
+    out: dict[str, list[str]] = {}
+    for w in warnings:
+        src = next((lab for lab, keys in WARNING_SOURCES if any(k in w for k in keys)), "其他")
+        line = one_line(w)
+        if line not in out.setdefault(src, []):
+            out[src].append(line)
+    order = [lab for lab, _ in WARNING_SOURCES] + ["其他"]
+    return {k: out[k] for k in order if k in out}
+
+
+def format_warnings(warnings: list[str]) -> list[str]:
+    return [f"  [{src}] {line}" for src, lines in group_warnings(warnings).items() for line in lines]
+
 
 def summarize(res: DayResult, ctx: DayContext, path: Path | None, warnings: list[str], llm) -> str:
     doc = res.doc
@@ -200,8 +259,9 @@ def summarize(res: DayResult, ctx: DayContext, path: Path | None, warnings: list
         L.append(f"  ERROR {e}")
     for x in rep.warnings[:10]:
         L.append(f"  WARN  {x}")
-    for x in warnings:
-        L.append(f"  警告  {x}")
+    if warnings:
+        L.append(f"流程警告（{len(warnings)} 則，依來源）：")
+        L += format_warnings(warnings)
     if path is not None:
         L += ["", "★ 請原封不動上傳此檔：", f"  {path}"]
     L.append("=" * 72)
@@ -256,11 +316,22 @@ def run(*, now: datetime | None = None, morning: bool = False, force: bool = Fal
             return RunResult(0, T.isoformat(), regenerated=False)
         D = cal.prev_trading_day(T, hol, inclusive=False)
     else:
-        T = date.fromisoformat(trade_date) if trade_date else cal.next_trading_day(today, hol)
+        T, D, note = decide_dates(now, hol, trade_date)
+        if note:
+            warnings.append(note)
+            log(note)
         if (T - today).days > 1 and not force and not trade_date:
             log(f"下一個交易日是 {T}，今晚不是它的前一天；不產生 D-Plan（請在 {T - timedelta(days=1)} 晚上執行，或加 --force）")
             return RunResult(0, T.isoformat())
-        D = cal.prev_trading_day(T, hol, inclusive=False)
+        deadline = datetime.combine(T, SUBMIT_DEADLINE, tzinfo=TZ)
+        if now > deadline:
+            if force or trade_date:
+                warnings.append(f"交易日 {T} 的繳交截止（{SUBMIT_DEADLINE:%H:%M}）已過，這份 D-Plan 只能做測試／留存")
+            else:
+                msg = (f"交易日 {T} 的繳交截止（{T} {SUBMIT_DEADLINE:%H:%M}）已過，不產生 D-Plan"
+                       + ("（今天收盤行情 14:30 後才公布，請在今晚重跑）" if note else "") + "；測試請加 --force")
+                log(banner(msg))
+                return RunResult(1, T.isoformat(), errors=[msg], warnings=warnings)
     Ts, Ds = T.isoformat(), D.isoformat()
     raw = paths.raw(Ts)
     raw.mkdir(parents=True, exist_ok=True)
@@ -326,7 +397,11 @@ def _evening(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, tea
     warnings.extend(col.warnings)
     log(f"  完成：{', '.join(col.done) or '（無）'}；警告 {len(col.warnings)} 則")
     if not col.market_ok and not (ROOT / "data" / "market" / f"{Ds}.parquet").exists():
-        msg = f"{Ds} 行情抓取失敗且本機沒有資料——無法產生 D-Plan"
+        if col.market_not_ready:
+            msg = (f"{Ds} 的收盤行情尚未公布（交易所最新資料仍是前一交易日）——不產生 D-Plan；請稍後重跑"
+                   f"（決策日會一直是 {Ds}：若改用前一交易日，下單會用不含今天成交的庫存而可能超賣）")
+        else:
+            msg = f"{Ds} 行情抓取失敗且本機沒有資料——無法產生 D-Plan"
         log(banner(msg))
         return RunResult(1, Ts, errors=[msg], warnings=warnings)
     ib = load_inbox(Ts, Ds, base=paths.inbox, runs_dir=paths.runs)
@@ -369,6 +444,10 @@ def _morning(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, tea
     inputs = json.loads(prev_inputs.read_text(encoding="utf-8"))
     moves = []
     us_new, tx_new = col.inputs.get("us"), col.inputs.get("taifex")
+    if not us_new:
+        log("美股資料仍缺（所有來源失敗）：只用台指期夜盤判斷是否重產")
+    if not tx_new:
+        log("台指期夜盤資料缺值：只用美股 SOX 判斷是否重產")
     if us_new and us_new.get("content_as_of") != (inputs.get("us") or {}).get("content_as_of"):
         sox = us_new["quotes"].get("SOX", {}).get("chg_pct")
         if sox is not None and abs(sox) > MORNING_THRESHOLD:

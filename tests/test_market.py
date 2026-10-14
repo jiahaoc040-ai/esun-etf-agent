@@ -190,3 +190,81 @@ def test_fetch_latest_rejects_date_mismatch():
             return df
     with pytest.raises(RuntimeError, match="日期不一致"):
         m.fetch_latest(F())
+
+
+# ------------------------------------------------------------------ 上櫃日行情：讀取中斷重試、依日期查詢備援
+class _Resp:
+    def __init__(self, payload, status=200):
+        self.payload, self.status_code = payload, status
+
+    def raise_for_status(self):
+        import requests
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self.payload
+
+
+class _Sess:
+    """script：依 URL 片段回傳的序列（例外會被 raise）。"""
+    def __init__(self, script):
+        self.script, self.calls, self.headers = script, [], {}
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append((url, dict(params or {})))
+        for frag, seq in self.script.items():
+            if frag in url:
+                r = seq.pop(0) if len(seq) > 1 else seq[0]
+                if isinstance(r, BaseException):
+                    raise r
+                return _Resp(r)
+        return _Resp({}, 404)
+
+
+def test_get_json_retries_incomplete_read_with_backoff(monkeypatch):
+    import http.client
+    import requests
+    sleeps = []
+    monkeypatch.setattr(m.time, "sleep", sleeps.append)
+    s = _Sess({"x.com": [requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead(100 bytes read)"),
+                         http.client.IncompleteRead(b"partial"), {"ok": 1}]})
+    f = m.MarketFetcher(session=s)
+    assert f.get_json("https://x.com/a") == {"ok": 1} and len(s.calls) == 3 and sleeps == [1, 2]
+    s2 = _Sess({"x.com": [requests.exceptions.ChunkedEncodingError("broken")]})
+    with pytest.raises(RuntimeError, match="3 次.*ChunkedEncodingError"):
+        m.MarketFetcher(session=s2).get_json("https://x.com/b")
+    assert len(s2.calls) == 3
+
+
+def test_fetch_latest_falls_back_to_dated_tpex_endpoint(monkeypatch):
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    real = json.loads((FX / "real" / "otc_2025-01-02_EW_json.json").read_text(encoding="utf-8"))
+    twse = [r | {"Date": "1140102"} for r in fx("twse_day_all.json")]
+    import requests
+    s = _Sess({"STOCK_DAY_ALL": [twse], "tpex_mainboard_daily_close_quotes": [requests.exceptions.ChunkedEncodingError("x")],
+               "afterTrading/otc": [real]})
+    warns = []
+    df = m.fetch_latest(m.MarketFetcher(session=s), expected=date(2025, 1, 2), warnings=warns)
+    assert set(df["date"]) == {"2025-01-02"} and (df["ticker"].map(lambda t: m.load_universe()[t]["market"]) == "TPEX").sum() > 10
+    url, params = next(c for c in s.calls if "afterTrading/otc" in c[0])
+    assert url == m.TPEX_DAY_URL and params == {"date": "2025/01/02", "type": "EW", "response": "json"}
+    assert sum("tpex_mainboard" in c[0] for c in s.calls) == 3 and "afterTrading/otc?date=2025/01/02" in warns[0]
+    # OpenAPI 成功但是舊日期 → 也改用依日期查詢
+    old = [r | {"Date": "1131231", "SecuritiesCompanyCode": "8299"} for r in fx("tpex_day_all.json")[:1]]
+    s2 = _Sess({"STOCK_DAY_ALL": [twse], "tpex_mainboard_daily_close_quotes": [old], "afterTrading/otc": [real]})
+    w2 = []
+    assert set(m.fetch_latest(m.MarketFetcher(session=s2), expected=date(2025, 1, 2), warnings=w2)["date"]) == {"2025-01-02"}
+    assert "OpenAPI 日期" in w2[0]
+
+
+def test_fetch_latest_dated_fallback_must_match_and_market_not_ready(monkeypatch):
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    real = json.loads((FX / "real" / "otc_2025-01-02_EW_json.json").read_text(encoding="utf-8"))
+    twse = [r | {"Date": "1140103"} for r in fx("twse_day_all.json")]
+    s = _Sess({"STOCK_DAY_ALL": [twse], "tpex_mainboard": [ValueError("bad json")], "afterTrading/otc": [real]})
+    with pytest.raises(ValueError, match="≠ 查詢日期"):                       # 端點回傳 1/2，要求的是 1/3
+        m.fetch_latest(m.MarketFetcher(session=s), expected=date(2025, 1, 3))
+    s2 = _Sess({"STOCK_DAY_ALL": [twse]})
+    with pytest.raises(m.MarketNotReady, match="尚未公布"):
+        m.fetch_latest(m.MarketFetcher(session=s2), expected=date(2025, 1, 6))

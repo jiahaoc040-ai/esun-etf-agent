@@ -176,7 +176,8 @@ def _sec_structure(doc, decl, S):
         ["單檔上限", f"{pct(r['cap_other'], 0, False)}（官方 10%，留 2% 給價格漂移：買進當天漲停且淨值下跌仍不超過 10%），2330 為 {pct(r['cap_tsmc'], 0, False)}（官方 25%）；"
                    f"前日收盤超過 {pct(r['guard_other'], 1, False)}（2330 {pct(r['guard_tsmc'], 0, False)}）當日減回"],
         ["湊檔數部位", f"市值前 {r['filler_pool']} 大、且不在高信心名單者，取市值最大的若干檔各 {pct(r['filler_min'], 0, False)}–{pct(r['filler_max'], 0, False)}，"
-                     f"使總持股 {r['n_total_min']}–{r['n_total_max']} 檔（官方 20–30；內部下限 21 檔，建倉當天若一檔停牌買不到仍有 20 檔）"],
+                     f"使總持股 {r['n_total_min']}–{r['n_total_max']} 檔（官方 20–30；內部至少比 20 檔多 3 檔緩衝）；"
+                     f"出現在超過 {r['filler_max_overlap']:.0%} 主動型 ETF 前 15 大的股票排在後面（低重疊優先）"],
         ["現金", f"目標 {pct(r['cash_target'], 0, False)}，區間 {pct(r['cash_low'], 0, False)}–{pct(r['cash_high'], 0, False)}；"
                "委託後預估現金比 ≥ 2% ＋ 0.03 × 買進金額占淨值（成交均價可能高於前日收盤），不足時等比例縮減買進"],
         ["Active Share", f"我方前 15 大 vs 每檔主動型 ETF 前 15 大，官方 ≥ 15%、內部目標 ≥ {pct(r['ap_target'], 0, False)}；"
