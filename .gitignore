@@ -5,3 +5,5 @@ __pycache__/
 .env
 data/raw/
 runs/*/raw/
+runs/launchd/
+runs/state/llm_usage.json

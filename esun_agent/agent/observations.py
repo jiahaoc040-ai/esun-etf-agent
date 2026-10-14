@@ -224,14 +224,17 @@ def taifex_observation(b: EvidenceBuilder, d: dict) -> str:
 
 
 def us_observation(b: EvidenceBuilder, d: dict) -> str:
-    sid = b.add_source("vendor", d["url"], d["content_as_of"], name=d.get("name") or "美股／ADR 收盤行情")
+    """d["sources"]（選填，最多 5 個 {url, name, archive_url}）：每個代號一個來源；沒有時用 d["url"]。"""
+    srcs = d.get("sources") or [{"url": d["url"], "name": d.get("name") or "美股／ADR 收盤行情"}]
+    sids = [b.add_source("vendor", s["url"], d["content_as_of"], name=s.get("name"), archive_url=s.get("archive_url"))
+            for s in srcs[:5]]
     parts, values = [], {}
     for name, q in d["quotes"].items():
         parts.append(f"{name} {q['chg_pct']:+.2f}%")
         values[f"{name}_chg_pct"] = q["chg_pct"]
         if "close" in q:
             values[f"{name}_close"] = q["close"]
-    return b.add_obs([sid], "us_overnight", "美股／ADR 收盤：" + "、".join(parts), values)
+    return b.add_obs(sids, "us_overnight", "美股／ADR 收盤：" + "、".join(parts), values)
 
 
 def event_observation(b: EvidenceBuilder, e: dict, declaration: dict | None = None) -> str:

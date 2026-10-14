@@ -59,7 +59,7 @@
 5. prompt 模板放在 `prompts/` 並納入版本控制；code_version 用 `git:<short sha>`。
 用 tests/fixtures 寫一個端到端測試：產出的 D-Plan 必須 0 ERROR。
 
-## T5 每日排程
+## T5 每日排程（已完成：scripts/daily_run.py、esun_agent/collect/、scripts/launchd/，操作手冊見 README）
 
 **Prompt：**
 先讀 CLAUDE.md。寫 `scripts/daily_run.py` 和 `.github/workflows/daily.yml`：

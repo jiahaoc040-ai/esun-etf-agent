@@ -9,8 +9,9 @@ obs_ids、logic…）與 exits（主動移出者的理由）；權重由程式�
 LLM 不得決定權重或股數：輸出裡出現 weight／shares／orders 等欄位一律視為錯誤，由程式（base_weights → apply_tilts →
 derive_orders）機械產生。posture 與現金區間由實際委託推得，不由 LLM 填。
 
-供應商：預設 Gemini（環境變數 GOOGLE_API_KEY），另支援 Anthropic（ANTHROPIC_API_KEY）。以 LLM_PROVIDER=gemini|anthropic
-或 make_client(provider=...) 切換；模型以 LLM_MODEL 覆寫。用 requests 直連 REST，不依賴各家 SDK。
+供應商：預設 Google Gemini 免費方案（GOOGLE_API_KEY；主模型 LLM_MODEL、備援 LLM_FALLBACK_MODEL），另支援 Anthropic
+（LLM_PROVIDER=anthropic、ANTHROPIC_API_KEY、ANTHROPIC_MODEL）作付費備援。make_client() 回傳 llm_budget.QuotaClient：
+呼叫間隔、429／5xx 退避、主模型失敗改備援、單日呼叫上限、token 估算（見 llm_budget.py）。用 requests 直連 REST。
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-DEFAULT_MODELS = {"gemini": "gemini-2.5-pro", "anthropic": "claude-sonnet-5-5"}
+DEFAULT_MODELS = {"gemini": "gemini-3.8-flash", "gemini_fallback": "gemini-3.5-flash-lite", "anthropic": "claude-sonnet-5-5"}
 PROVIDER_NAME = {"gemini": "google", "anthropic": "anthropic"}          # agent_metadata.model_provider
 FORBIDDEN_KEYS = {"weight", "weights", "target_weight", "shares", "quantity", "orders", "order", "price", "amount",
                   "posture", "target_cash_pct_range", "net_exposure_intent"}
@@ -35,10 +36,19 @@ class LLMResult:
     text: str
     input_tokens: int = 0
     output_tokens: int = 0
+    model: str | None = None                  # 實際回應的模型（agent_metadata.model_version）
 
 
 class LLMError(RuntimeError):
     pass
+
+
+class LLMHTTPError(LLMError):
+    """HTTP 非 200。status 供重試判斷：429（額度）、5xx（暫時性）。"""
+
+    def __init__(self, msg: str, status: int, body: str = ""):
+        super().__init__(msg)
+        self.status, self.body = status, body
 
 
 class GeminiClient:
@@ -57,16 +67,20 @@ class GeminiClient:
         body = {"systemInstruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": user}]}],
                 "generationConfig": {"temperature": temperature, "responseMimeType": "application/json"}}
-        r = self.session.post(url, params={"key": self.api_key}, json=body, timeout=self.timeout)
+        try:
+            r = self.session.post(url, params={"key": self.api_key}, json=body, timeout=self.timeout)
+        except requests.RequestException as e:
+            raise LLMHTTPError(f"Gemini 連線失敗：{e}", 599) from e
         if r.status_code != 200:
-            raise LLMError(f"Gemini HTTP {r.status_code}: {r.text[:300]}")
+            raise LLMHTTPError(f"Gemini HTTP {r.status_code}: {r.text[:300]}", r.status_code, r.text[:2000])
         d = r.json()
         try:
             text = "".join(p.get("text", "") for p in d["candidates"][0]["content"]["parts"])
         except (KeyError, IndexError, TypeError) as e:
             raise LLMError(f"Gemini 回應格式不符: {str(d)[:300]}") from e
         u = d.get("usageMetadata", {})
-        return LLMResult(text, int(u.get("promptTokenCount", 0)), int(u.get("candidatesTokenCount", 0)))
+        return LLMResult(text, int(u.get("promptTokenCount", 0)), int(u.get("candidatesTokenCount", 0)),
+                         d.get("modelVersion") or self.model)
 
 
 class AnthropicClient:
@@ -77,34 +91,48 @@ class AnthropicClient:
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise LLMError("缺少 ANTHROPIC_API_KEY")
-        self.model = model or os.environ.get("LLM_MODEL") or DEFAULT_MODELS["anthropic"]
+        self.model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODELS["anthropic"]
         self.session = session or requests.Session()
         self.timeout, self.max_tokens = timeout, max_tokens
 
     def generate(self, system: str, user: str, *, temperature: float = 0.2) -> LLMResult:
         body = {"model": self.model, "max_tokens": self.max_tokens, "temperature": temperature, "system": system,
                 "messages": [{"role": "user", "content": user}]}
-        r = self.session.post("https://api.anthropic.com/v1/messages", json=body, timeout=self.timeout,
-                              headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01",
-                                       "content-type": "application/json"})
+        try:
+            r = self.session.post("https://api.anthropic.com/v1/messages", json=body, timeout=self.timeout,
+                                  headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01",
+                                           "content-type": "application/json"})
+        except requests.RequestException as e:
+            raise LLMHTTPError(f"Anthropic 連線失敗：{e}", 599) from e
         if r.status_code != 200:
-            raise LLMError(f"Anthropic HTTP {r.status_code}: {r.text[:300]}")
+            raise LLMHTTPError(f"Anthropic HTTP {r.status_code}: {r.text[:300]}", r.status_code, r.text[:2000])
         d = r.json()
         try:
             text = "".join(b.get("text", "") for b in d["content"] if b.get("type") == "text")
         except (KeyError, TypeError) as e:
             raise LLMError(f"Anthropic 回應格式不符: {str(d)[:300]}") from e
         u = d.get("usage", {})
-        return LLMResult(text, int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0)))
+        return LLMResult(text, int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0)), d.get("model") or self.model)
 
 
-def make_client(provider: str | None = None, **kw):
-    """provider：'gemini'（預設）或 'anthropic'；未指定時讀環境變數 LLM_PROVIDER。"""
+def make_client(provider: str | None = None, *, managed: bool = True, **kw):
+    """provider：'gemini'（預設）或 'anthropic'；未指定時讀環境變數 LLM_PROVIDER。
+    managed=True（預設）回傳 QuotaClient（Gemini：主模型 LLM_MODEL＋備援 LLM_FALLBACK_MODEL）；False 回傳單一 client。"""
     provider = (provider or os.environ.get("LLM_PROVIDER") or "gemini").lower()
     if provider == "gemini":
-        return GeminiClient(**kw)
+        primary = GeminiClient(model=kw.pop("model", None) or os.environ.get("LLM_MODEL") or DEFAULT_MODELS["gemini"], **kw)
+        if not managed:
+            return primary
+        from .llm_budget import QuotaClient
+        fb_model = os.environ.get("LLM_FALLBACK_MODEL") or DEFAULT_MODELS["gemini_fallback"]
+        fallback = GeminiClient(api_key=primary.api_key, model=fb_model, session=primary.session, timeout=primary.timeout)
+        return QuotaClient(primary, fallback)
     if provider == "anthropic":
-        return AnthropicClient(**kw)
+        c = AnthropicClient(**kw)
+        if not managed:
+            return c
+        from .llm_budget import QuotaClient
+        return QuotaClient(c, None, min_interval=0.0)
     raise LLMError(f"不支援的供應商 {provider!r}（gemini | anthropic）")
 
 

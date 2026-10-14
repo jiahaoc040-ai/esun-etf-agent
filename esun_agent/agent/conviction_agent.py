@@ -14,6 +14,7 @@ LLM 只決定「哪幾檔、高或中」；權重由程式換算，委託由 der
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -145,7 +146,14 @@ def _decl_summary(decl: dict) -> str:
     return json.dumps(d, ensure_ascii=False, indent=1)
 
 
-def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, feedback: list[str]) -> tuple[str, str]:
+SHRINK_LEVELS = [(None, None, None), (20, 15, 150), (12, 5, 100)]   # (候選列出名次上限, 新聞則數上限, 新聞摘要字數)
+
+
+def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, feedback: list[str],
+                  shrink: int = 0) -> tuple[str, str]:
+    """shrink：提示詞過長時的縮減等級（0 = 完整；1、2 = 縮減候選池與新聞摘要，見 SHRINK_LEVELS）。
+    縮減只影響 LLM 看到的內容；被略去的 observation 不能被引用（引用會被退回）。"""
+    cand_cap, news_cap, news_chars = SHRINK_LEVELS[min(shrink, len(SHRINK_LEVELS) - 1)]
     bases = "\n".join(f"- {b['id']}（{b['label']}）：來源 authority 須為 {'／'.join(b['authority'])}" for b in allowed_bases(decl))
     system = _render((PROMPT_DIR / SYSTEM_PROMPT).read_text(encoding="utf-8"), etf_name=decl["etf"]["name"],
                      allowed_bases=bases, n_min=P.n_conv_min, n_max=P.n_conv_max, w_high=f"{P.w_high:.0%}",
@@ -167,18 +175,31 @@ def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, 
         if t in prep.stop:
             line += f"；⚠ 觸發停損（跌幅 > {P.stop_loss:.0%}）：須移出，除非引用今日新的正面事件"
         cur.append(line)
+    cands = prep.cands
+    if cand_cap is not None:
+        cands = cands[(cands["rank"] <= cand_cap) | cands["held"] | cands["forced"]]
+    shown = set(cands.index) | set(prep.held_picks)
     cl = []
-    for t, r in prep.cands.iterrows():
+    for t, r in cands.iterrows():
         o = prep.cand_obs[t]
         tag = "持有中" if r["held"] else ("2330 固定列入" if r["forced"] and not r["in_pool"] else "")
         cl.append(f"- 第 {int(r['rank'])} 名 {t} {_name(t)}{'（' + tag + '）' if tag else ''}：分數 {r['score']:+.2f}；"
                   f"candidate_screen {o['screen']}" + (f"；trust_flow {o['trust']}" if "trust" in o else ""))
-    obs = []
+    obs, n_news = [], 0
     for o in prep.ev.observations:
         m = prep.ev.meta[o["obs_id"]]
+        st = o["statement"]
+        if cand_cap is not None:
+            if m.get("ticker") and m["ticker"] not in shown:
+                continue                                       # 縮減：只留列出的候選與持股的個股事實
+            if o.get("topic") == "news":
+                n_news += 1
+                if n_news > news_cap:
+                    continue
+                st = st if len(st) <= news_chars else st[:news_chars - 1] + "…"
         obs.append(json.dumps({"obs_id": o["obs_id"], "topic": o.get("topic"), "ticker": m.get("ticker"),
                                "authority": m.get("authorities"), "as_of": m["as_of"], "carried": m.get("carried"),
-                               "statement": o["statement"], "values": o["values"]}, ensure_ascii=False))
+                               "statement": st, "values": o["values"]}, ensure_ascii=False))
     if prep.blackout:
         blk = (f"⚠ 今天是高波動事件前一交易日（{'、'.join(e['name'] for e in prep.blackout)}，美國時間 {prep.blackout[0]['date']}，"
                f"見 {prep.blk_obs}）：不可新增股票、不可升級，既有部位凍結")
@@ -191,6 +212,17 @@ def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, 
                    current_picks="\n".join(cur) or "（目前沒有高信心名單：今天是首次建倉，請挑 10–12 檔）",
                    candidates="\n".join(cl), observations="\n".join(obs), feedback=fb)
     return system, user
+
+
+def fit_prompts(ctx, prep, decl, P, feedback, max_tokens: int) -> tuple[str, str, int, int]:
+    """依序嘗試縮減等級直到估計 token ≤ max_tokens。回傳 (system, user, 等級, 估計 tokens)；最後一級仍超過時照樣回傳。"""
+    from .llm_budget import estimate_tokens
+    for lv in range(len(SHRINK_LEVELS)):
+        system, user = build_prompts(ctx, prep, decl, P, feedback, shrink=lv)
+        est = estimate_tokens(system) + estimate_tokens(user)
+        if est <= max_tokens:
+            break
+    return system, user, lv, est
 
 
 # ----------------------------------------------------------------------------- 提案檢查
@@ -443,7 +475,7 @@ def _targets(prep: Prep, res_weights: dict[str, float], P: ConvictionParams, top
 def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None = None, *,
                             params: ConvictionParams | None = None, cand_params: CandidateParams | None = None,
                             events: list[dict] | None = None, max_attempts: int = MAX_ATTEMPTS,
-                            clock=now_taipei) -> DayResult:
+                            clock=now_taipei, max_prompt_tokens: int | None = None) -> DayResult:
     state = state or ConvictionState()
     P, C = params or ConvictionParams(), cand_params or CandidateParams()
     decl = ctx.declaration or load_declaration()
@@ -474,15 +506,18 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
             rep = validate(doc, vctx, filename=fname)
         return doc, errs + rep.errors, rep, plan, bnotes
 
+    budget = max_prompt_tokens or int(os.environ.get("LLM_MAX_PROMPT_TOKENS", 200_000))
     for n in range(1, max_attempts + 1):
-        system, user = build_prompts(ctx, prep, decl, P, feedback)
-        log: dict = {"attempt": n, "errors": []}
+        system, user, shrink, est = fit_prompts(ctx, prep, decl, P, feedback, budget)
+        log: dict = {"attempt": n, "errors": [], "shrink": shrink, "est_tokens": est, "system": system, "user": user}
         attempts.append(log)
         try:
             res = llm.generate(system, user)
         except LLMError as e:
             log["errors"] = feedback = [f"LLM 呼叫失敗：{e}"]
             continue
+        model = res.model or getattr(llm, "model", model)
+        log["model"] = model
         usage["input"] += res.input_tokens
         usage["output"] += res.output_tokens
         log["raw"] = res.text
