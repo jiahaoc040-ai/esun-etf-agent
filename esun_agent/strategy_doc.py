@@ -213,6 +213,10 @@ def _sec_selection(doc, decl, S):
     table(doc, ["入選依據", "資料來源（authority）", "例子"],
           [[b["label"], "、".join(b["authority"]), "；".join(b["examples"])] for b in decl["selection"]["allowed_bases"]],
           widths=[70, 90, 305])
+    heading(doc, "宣告因子", 2)
+    roles = {"primary": "首要", "supporting": "輔助（排序）", "risk_overlay": "風險疊加", "auxiliary": "輔助（只升降一級）"}
+    table(doc, ["因子", "角色", "用法"], [[f["label"], roles.get(f["role"], f["role"]), f["usage"]] for f in decl["factors"]],
+          widths=[80, 70, 315])
     heading(doc, "Agent 的輸出與程式檢查", 2)
     bullets(doc, decl["selection"]["requirements"] + [
         "信心等級：" + "；".join(decl["selection"]["conviction_levels"].values()) + "。"])
@@ -230,12 +234,15 @@ def _sec_discipline(doc, decl, S):
     bullets(doc, list(decl["discipline"][k] for k in ("keep_rank", "min_hold_days", "max_swaps", "stop_loss", "event_blackout")) + [
         "名單與信心等級沒有新證據就續抱；每次換股往返成本約 0.6%，候選分數變動不是換股理由。",
         f"狀態（名單、進場日、引用證據）存於 {decl['discipline']['state']}，隔日重建成 observation，續抱的推論可重新引用原證據。"])
-    from .strategy.conviction import load_event_calendar
+    from .strategy.conviction import is_blackout_event, load_event_calendar
     evs = [e for e in load_event_calendar() if "2026-10-20" <= e["date"] <= "2026-11-30"]
     if evs:
-        table(doc, ["初賽期間高波動事件（美國時間）", "前一交易日的處理"],
-              [[f"{e['date']} {e['name']}" + ("（推估）" if e.get("estimated") else ""), "不新增、不升級，既有部位凍結"] for e in evs],
+        table(doc, ["初賽期間美國重大事件（美國時間）", "處理"],
+              [[f"{e['date']} {e['name']}" + ("（推估）" if e.get("estimated") else ("（待核對）" if e.get("confirmed") is False else "")),
+                "前一交易日不新增、不升級，既有部位凍結" if is_blackout_event(e) else "前 1 日與當日降低新建倉"] for e in evs],
               widths=[230, 235])
+    para(doc, "CPI、PCE、非農就業與 Apple／Microsoft／Alphabet／Amazon／Meta／AMD 財報日，於主辦方初賽開始前依官方公告補入事件表"
+              "（config/event_calendar.json，每筆附官方來源網址），事件前 1 日與當日降低新建倉。", size=9)
     mapping_box(doc, [
         "observations：position_pnl（持有天數、相對成本報酬）與 event_calendar（事件排程）。",
         "inferences：停損出場以 position_pnl 為前提；事件前一交易日的 no_trade 推論引用 event_calendar。",

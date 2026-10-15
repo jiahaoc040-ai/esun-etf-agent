@@ -35,7 +35,7 @@
 - `esun_agent/orders.py` 官方委託公式
 - `esun_agent/ledger.py` 記帳（成交、NAV、與官方庫存對帳；除權息不入帳、分割才調股數）
 - **每日流程（T5，在 SS 的 Mac 上跑）**
-  - `esun_agent/collect/`：`calendar.py`（TWSE 休市日）、`revenue.py`（MOPS 月營收 sii/otc，YoY/MoM、24 個月新高，存 `data/revenue/`）、`news.py`（MOPS 當日重大訊息，限 150 檔、發言時間 ≤ D 19:30；上櫃 TPEx OpenAPI t187ap04_O，非 JSON 回應只記單行警告）、`taifex.py`（台指期夜盤 CSV）、`us.py`（SPX/NDX：FRED；SOX/TSM：Yahoo（瀏覽器 UA、429 退避 2 次）→ Nasdaq API；Stooq 最後）、`daily.py`（`collect_day`：每步失敗只警告、降級為缺值；上櫃日行情 OpenAPI 失敗改用 afterTrading/otc 依日期查詢並核對日期）。parser 都有 `tests/fixtures/collect/` 測試；`scripts/collect_data.py --save-raw`
+  - `esun_agent/collect/`：`calendar.py`（TWSE 休市日）、`revenue.py`（MOPS 月營收 sii/otc，YoY/MoM、24 個月新高，存 `data/revenue/`）、`news.py`（MOPS 當日重大訊息，限 150 檔、發言時間 ≤ D 19:30；上櫃 TPEx OpenAPI t187ap04_O，非 JSON 回應只記單行警告）、`taifex.py`（台指期夜盤 CSV）、`us.py`（SPX/NDX：FRED（有 `FRED_API_KEY` 走正式 API，否則 fredgraph.csv）；SOX/TSM：Yahoo（瀏覽器 UA、429 退避 2 次）→ Nasdaq API；Stooq 最後）、`fred.py`（總經 DGS2／DFF／VIXCLS／T10Y2Y → topic=macro observation；API 一律帶 realtime_start/end＝vintage（ALFRED）；content_as_of 用觀測值日期；金鑰不得出現在 source url／警告）、`daily.py`（`collect_day`：每步失敗只警告、降級為缺值；上櫃日行情 OpenAPI 失敗改用 afterTrading/otc 依日期查詢並核對日期）。parser 都有 `tests/fixtures/collect/` 測試；`scripts/collect_data.py --save-raw`
   - `esun_agent/agent/llm_budget.py` `QuotaClient`：Gemini 主模型 `LLM_MODEL`（預設 gemini-3.8-flash）＋備援 `LLM_FALLBACK_MODEL`（gemini-3.5-flash-lite）、間隔 ≥ 13 秒、429/5xx 退避、讀取逾時 60 秒、主模型逾時一次或連 3 次失敗／額度用完改備援、單日 10 次、提示詞 > 200K 先縮減（`conviction_agent.fit_prompts`）、`model_version` 記實際模型；`scripts/llm_smoke_test.py`
   - `esun_agent/datapack.py`：主辦方資料包（取代舊的 runs/official）。`find_datapack`（data/datapack/、~/Downloads/ 中 doc_type=DataPack 且 trade_date=T 的最新檔，複製到 runs/<T>/raw/datapack.json）、`parse_datapack`（team_id／trade_date 必須相符；missing 含 prev_settlement 或 account 為 null → `NotSettledError`「結算尚未產生，請稍後重新下載」，不可當空手；as_of_date null 且 missing 空 → 第一個交易日全現金）、`reconcile`、摘要（void_reasons、excluded_codes、incidents warn/fail 置頂）。找不到資料包 → 自記帳＋大字「不可上傳」
   - `esun_agent/official.py`：自記帳 `runs/state/ledger.json` 推估（`project_to`）與 `team_id()`
@@ -48,13 +48,13 @@
 - **正式策略 v2（集中主題＋事件驅動）**
   - `esun_agent/strategy/candidates.py` 每日候選池（約 30 檔）：投信 5/10 日淨買超（成交值標準化）、20 日相對強度、成交值放大，減主動型 ETF 前 15 大重疊扣分；2330 固定列入。參數 `CandidateParams`
   - `esun_agent/strategy/conviction.py` 權重換算（高 8%／中 5.5%，2330 高 15%／中 10%，單檔上限 8%、2330 20%）、湊檔數部位（市值前 30 大各 1–2%，低重疊優先，總持股 23–24，比 20 檔下限多 3 檔緩衝）、現金 2–5%、Active Share 修正（內部 ≥ 20%）、無交易帶 1.5%、換股紀律 `discipline`（持有 ≥ 3 日、每日最多換 4 檔、停損 −12%、事件前一日凍結）。參數 `ConvictionParams`
-  - `config/event_calendar.json` FOMC／NVIDIA 財報／美國大選（estimated=true 者要在公告後更新）
+  - `config/event_calendar.json` 美國重大事件（每筆附官方 url；confirmed=false 未核對、estimated=true 推估；`to_confirm` 是尚未填日期的事件，程式忽略）。程式強制凍結只限 fomc／nvidia_earnings／us_election（`BLACKOUT_KINDS`）；其他事件（CPI、PCE、非農、科技巨頭財報）由 `us_event_window` 標出前 1 日／當日，提示詞要求降低新建倉；VIX > 25 或 DGS2 單日 > 15bp 為風險訊號（`macro_risk_flags`）
   - `esun_agent/agent/conviction_agent.py` 正式 D-Plan 組裝器 `assemble_conviction_day`：LLM 只輸出 market_view、picks（10–12 檔＋high/medium＋obs_ids）、exits；程式換算權重；最多 3 次重試，失敗 → 凍結既有名單 → 再不行改用合規基準 A。狀態 `runs/state/conviction.json`（`conviction_state.py`）
   - `esun_agent/conviction_backtest.py`＋`scripts/run_conviction_backtest.py` 代理回測（候選池前 11 名代替 LLM；預設遲滯：已持有且名次 ≤ 30 續抱）→ `docs/conviction_backtest.md/.json`
 - **降級保底（舊版 v1）**：`esun_agent/strategy/final.py` 合規基準 A（`base_weights`／`FinalStrategy.decide`）＋ tilt，參數 `FinalParams`（Active Share 目標 22%、前日 < 17% 強制再平衡、已 < 15% 補到 29%，校準見 `docs/active_share_calibration.md`）；`agent/assemble.py`（`assemble_day`）與 `tilt_state.py` 保留可用
 - `esun_agent/agent/` 共用：`observations.py`（資料→sources/observations，含 candidate_screen／trust_flow／position_pnl／filler_universe／event_calendar）、`llm.py`（Gemini 預設／Anthropic；`parse_picks` v2、`parse_proposal` v1）、`plan.py`（目標權重→decisions/orders/posture/funding_for；單日異動 > 60 檔時延後一部分（schema v4.3 上限）；合規保險：`force_passive_trims`（前日權重 > 9.5%／2330 > 24% 或資料包權重提示 → 強制 TRIM，推論寫「被動超限，依規則於 5 日內調整」，不延後）、`stress_cap_buys`（漲停 ×1.10 壓力測試））
 - `prompts/` LLM 提示詞模板（`conviction_*.md` 為正式版；改任何模板 = 改版）
-- `config/strategy_declaration.json` 策略宣告 v2（ETF「主動台灣核心優選 AI」，status=final）：`portfolio_rules`＝`ConvictionParams`、`candidate_rules`＝`CandidateParams`、`fallback.portfolio_rules`＝`FinalParams`（有測試）
+- `config/strategy_declaration.json` 策略宣告 v2.3.0（ETF「主動台灣焦點主題」，status=final；`factors` 含 us_events／macro／retail_attention（散戶關注度只能升降一級信心、不單獨觸發買賣），有測試）：`portfolio_rules`＝`ConvictionParams`、`candidate_rules`＝`CandidateParams`、`fallback.portfolio_rules`＝`FinalParams`（有測試）
 - Active Share（v2）：內部目標 ≥ 20%；前日收盤 < 17% → 當日強制再平衡；前日已 < 15% → 補到 ≥ 25%
 - `docs/conviction_backtest.md`（v2）、`docs/final_strategy_backtest.md`、`docs/backtest_T3.md`（v1 舊版策略，現為降級保底）回測與歸因報告
 - `scripts/validate_dplan.py` CLI（`--ctx` 或 `--datapack`）

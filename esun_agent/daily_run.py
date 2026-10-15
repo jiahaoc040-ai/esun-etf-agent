@@ -246,6 +246,7 @@ WARNING_SOURCES = [
     ("月營收", ("月營收", "[revenue]")),
     ("台指期夜盤", ("台指期", "夜盤", "[taifex]")),
     ("美股", ("美股", "SOX", "NDX", "SPX", "TSM", "[us]")),
+    ("總經", ("FRED", "macro", "[macro]")),
     ("ETF 持股", ("ETF", "[etf]")),
     ("帳務／資料包", ("資料包", "DataPack", "官方", "自記帳", "對帳", "TEAM_ID", "帳務", "team_id")),
     ("LLM", ("LLM", "降級", "模型")),
@@ -515,7 +516,7 @@ def _morning(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, tea
         warnings.append("找不到前一晚的輸入（runs/<T>/raw/inputs.json），改跑完整流程")
         log(banner("找不到前一晚的 D-Plan 輸入，改跑完整流程（請確認昨晚 daily_run 是否成功）"))
         return _evening(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, team, do_archive)
-    col = collector(D, raw / "collect_morning", steps=("taifex", "us"), now=now, do_archive=do_archive)
+    col = collector(D, raw / "collect_morning", steps=("taifex", "us", "macro"), now=now, do_archive=do_archive)
     warnings.extend(col.warnings)
     inputs = json.loads(prev_inputs.read_text(encoding="utf-8"))
     moves = []
@@ -548,6 +549,8 @@ def _morning(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, tea
         inputs["us"] = us_new
     if tx_new:
         inputs["taifex"] = tx_new
+    if col.inputs.get("macro"):
+        inputs["macro"] = col.inputs["macro"]
     state = ConvictionState.load(raw / "state_before.json")
     r = _build_and_write(now, Ts, Ds, paths, raw, inputs, state, llm_factory, log, warnings, team, "morning")
     r.regenerated = r.code == 0

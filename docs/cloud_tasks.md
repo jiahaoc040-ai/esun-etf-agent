@@ -10,6 +10,26 @@
 - Active Share 參數已用真實前 15 大重新校準（`docs/active_share_calibration.md`）。**正式開跑前每日要重抓 ETF 持股**（`scripts/fetch_etf_holdings.py`），
   並在開賽前再重跑一次 `scripts/calibrate_active_share.py` 確認參數仍成立（改參數＝改版，換 code_version，並同步 `config/strategy_declaration.json`）。
 
+## v2.3.0 待 SS 在 Mac 上確認的美國事件日期（雲端連不到官方網站）
+
+確認後把日期填進 `config/event_calendar.json` 的 `events`（kind、name、url 照抄 `to_confirm`，加 `"confirmed": true`），並從 `to_confirm` 移除；
+已在 `events` 的項目核對後把 `confirmed` 改成 true。改本檔＝改版（換 code_version），改完重跑 `python -m pytest -q` 與 `scripts/make_strategy_doc.py`。
+
+| 事件 | 官方來源 | 狀態 |
+|---|---|---|
+| FOMC 10/27–28（決議日 2026-10-28） | https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm | 已在 events，confirmed=false |
+| 美國期中選舉 2026-11-03 | https://www.fec.gov/introduction-campaign-finance/election-results-and-voting-information/ | 已在 events（法定日期），confirmed=false |
+| NVIDIA FY2027 Q3 財報（目前推估 2026-11-18） | https://investor.nvidia.com/events-and-presentations/default.aspx | 已在 events，estimated=true |
+| CPI（9 月、10 月數據） | https://www.bls.gov/schedule/news_release/cpi.htm | to_confirm |
+| PCE／個人所得與支出 | https://www.bea.gov/news/schedule | to_confirm |
+| 非農就業 | https://www.bls.gov/schedule/news_release/empsit.htm | to_confirm |
+| Apple 財報 | https://investor.apple.com/investor-relations/default.aspx | to_confirm |
+| Microsoft 財報 | https://www.microsoft.com/en-us/investor/events/events-recent | to_confirm |
+| Alphabet 財報 | https://abc.xyz/investor/ | to_confirm |
+| Amazon 財報 | https://ir.aboutamazon.com/events/default.aspx | to_confirm |
+| Meta 財報 | https://investor.atmeta.com/investor-events/default.aspx | to_confirm |
+| AMD 財報 | https://ir.amd.com/news-events/ir-calendar | to_confirm |
+
 每個任務各開一個雲端工作階段（claude.ai/code → 選這個 repo），把「Prompt」整段貼上即可。
 做完先 review PR、merge，再開下一個。依序做：T1 → T2 → T4 → T3 → T5，T6 最晚 10/20 前完成。
 

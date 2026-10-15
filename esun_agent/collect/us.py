@@ -1,7 +1,8 @@
 """美股收盤（SPX、NDX、SOX）與 TSM ADR：免金鑰來源，依代號各自的來源順序嘗試，全失敗才缺值。
 
-  SPX、NDX  FRED（聖路易聯準銀行）CSV：https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500 ／ NASDAQ100
-            → 欄位 observation_date（舊版 DATE）,<series>；休市日值為 "."（略過）。FRED 回應慢：逾時 60 秒、失敗重試 2 次。
+  SPX、NDX  FRED（聖路易聯準銀行）SP500 ／ NASDAQ100：有 FRED_API_KEY 用正式 API（帶 ALFRED realtime_start/end），
+            否則 fredgraph.csv（欄位 observation_date（舊版 DATE）,<series>；休市日值為 "."（略過））。見 collect/fred.py。
+            FRED 回應慢：逾時 60 秒、失敗重試 2 次。source url 用數列頁（不含金鑰）。
   SOX、TSM  Yahoo chart JSON（瀏覽器 User-Agent；429 退避重試 2 次）→ Nasdaq API historical
             （瀏覽器 User-Agent、Accept: application/json；assetclass 參數 SOX=index、TSM=stocks）。
   所有代號最後才試 Stooq 日線 CSV。
@@ -17,14 +18,15 @@ import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from . import fred
 from .http import BROWSER_HEADERS, Fetcher, archive, decode
 
-FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={s}"
+FRED_URL = fred.CSV_URL
 YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{s}?range=10d&interval=1d"
 NASDAQ_URL = "https://api.nasdaq.com/api/quote/{s}/historical?assetclass={a}&limit=10"
 STOOQ_URL = "https://stooq.com/q/d/l/?s={s}&i=d"
 
-FRED_TIMEOUT, FRED_RETRIES = 60, 3                   # 逾時 60 秒；第一次失敗後再重試 2 次
+FRED_TIMEOUT, FRED_RETRIES = fred.TIMEOUT, fred.RETRIES    # 逾時 60 秒；第一次失敗後再重試 2 次
 NASDAQ_HEADERS = {"Accept": "application/json, text/plain, */*", "Origin": "https://www.nasdaq.com",
                   "Referer": "https://www.nasdaq.com/"}
 
@@ -39,21 +41,7 @@ SOURCE_NAMES = {"fred": "FRED", "yahoo": "Yahoo Finance", "nasdaq": "Nasdaq", "s
 NY, TPE = ZoneInfo("America/New_York"), ZoneInfo("Asia/Taipei")
 
 
-def parse_fred(text: str) -> list[tuple[str, float]]:
-    rows = list(csv.reader(io.StringIO(text.strip().lstrip("﻿"))))
-    if not rows or len(rows[0]) < 2 or "date" not in rows[0][0].lower():
-        raise ValueError("FRED CSV 格式不符：" + text[:80])
-    out = []
-    for r in rows[1:]:
-        if len(r) < 2 or r[1].strip() in ("", "."):
-            continue
-        try:
-            out.append((r[0].strip(), float(r[1])))
-        except ValueError:
-            continue
-    if not out:
-        raise ValueError("FRED CSV 沒有數值")
-    return out
+parse_fred = fred.parse_csv
 
 
 def parse_yahoo(payload: dict) -> list[tuple[str, float]]:
@@ -105,13 +93,11 @@ def close_time_taipei(us_date: str) -> str:
     return dt.astimezone(TPE).replace(microsecond=0).isoformat()
 
 
-def fetch_series(fetcher: Fetcher, kind: str, sym) -> tuple[list[tuple[str, float]], str]:
+def fetch_series(fetcher: Fetcher, kind: str, sym, not_after: date | None = None) -> tuple[list[tuple[str, float]], str]:
     """回傳 (序列, 實際網址)。失敗丟例外。"""
     if kind == "fred":
-        url = FRED_URL.format(s=sym)
-        raw = fetcher.get(url, name=f"us_fred_{sym}.csv", headers=BROWSER_HEADERS, timeout=FRED_TIMEOUT,
-                          retries=FRED_RETRIES)
-        return parse_fred(decode(raw)), url
+        series, url, _ = fred.fetch(fetcher, sym, end=not_after)
+        return series, url
     if kind == "yahoo":
         url = YAHOO_URL.format(s=sym)
         raw = fetcher.get(url, name=f"us_yahoo_{sym.replace('%5E', '')}.json", headers=BROWSER_HEADERS,
@@ -136,7 +122,7 @@ def collect_us(fetcher: Fetcher, not_after: date | None = None, do_archive: bool
         errs = []
         for kind, sym in chain:
             try:
-                series, url = fetch_series(fetcher, kind, sym)
+                series, url = fetch_series(fetcher, kind, sym, not_after)
                 q = last_change(series, not_after)
                 break
             except Exception as e:  # noqa: BLE001 - 換下一個來源

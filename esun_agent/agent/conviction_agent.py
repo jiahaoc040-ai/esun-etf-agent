@@ -26,7 +26,8 @@ from ..data.etf_holdings import check_target_weights
 from ..dplan_validate import Report, validate
 from ..strategy.candidates import CandidateParams, screen
 from ..strategy.conviction import (LEVEL_LABELS, ConvictionParams, HeldPick, apply_band, blackout_events,
-                                   build_portfolio, discipline, guard_triggered, pick_return, stop_loss_names)
+                                   build_portfolio, discipline, guard_triggered, pick_return, stop_loss_names,
+                                   us_event_window)
 from ..strategy.declaration import allowed_bases, load_declaration
 from ..strategy.factors import factors_on
 from ..universe import load_universe
@@ -34,7 +35,8 @@ from .assemble import EVIDENCE_CUTOFF_TIME, PROMPT_DIR, AssembleError, DayContex
 from .conviction_state import ConvictionState, Pick
 from .llm import LLMError, PicksProposal, parse_picks
 from .observations import (BASIS_LABELS, EvidenceBuilder, blackout_observation, build_evidence,
-                           candidate_observations, filler_observation, iso, now_taipei, position_observation, prune)
+                           candidate_observations, filler_observation, iso, macro_risk_flags, now_taipei,
+                           position_observation, prune, us_events_observation)
 from .plan import (BUY_BUFFER, Plan, assign_funding, force_passive_trims, passive_overweight, plan_orders,
                    posture_for)
 from .tilt_state import trading_days_elapsed
@@ -106,6 +108,9 @@ class Prep:
     notes: list[str] = field(default_factory=list)
     passive: dict[str, float] = field(default_factory=dict)      # 被動超限、當日強制 TRIM 的持股 → 前日結算權重
     passive_alert: bool = False                                  # 資料包合規提示已點出單一個股權重異常
+    us_window: list = field(default_factory=list)                # 美國重大事件 [(事件, "當日"|"前1日")]（提示詞：降低新建倉）
+    us_obs: str | None = None
+    macro_flags: list[str] = field(default_factory=list)         # VIX > 25、2 年期殖利率單日 > 15bp
 
 
 def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: CandidateParams,
@@ -143,14 +148,20 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
         passive.update({t: w for t, w in cur_w.items() if w > P.cap(t)})
     if passive:
         notes.append("passive_trim:" + ",".join(f"{t}={w:.2%}" for t, w in sorted(passive.items())))
+    us_win = us_event_window(T, events)
+    us_obs = us_events_observation(b, us_win, D, T) if us_win else None
+    flags = macro_risk_flags(ctx.inputs.get("macro"))
+    if flags:
+        notes.append("macro_risk:" + "；".join(flags))
     return Prep(D, T, close, nav, cash, holdings, cur_w, fdf, cap, elig, held_picks, held, stop, blk, cands, ev,
-                cand_obs, pos_obs, blk_obs, ap_target, forced, notes, passive, alert)
+                cand_obs, pos_obs, blk_obs, ap_target, forced, notes, passive, alert, us_win, us_obs, flags)
 
 
 # ----------------------------------------------------------------------------- prompt
 
 def _decl_summary(decl: dict) -> str:
     d = {"etf": decl["etf"]["name"], "theme": decl["theme"]["summary"], "philosophy": decl["philosophy"],
+         "factors": [{"id": f["id"], "label": f["label"], "role": f["role"], "usage": f["usage"]} for f in decl["factors"]],
          "conviction_levels": decl["selection"]["conviction_levels"], "discipline": decl["discipline"],
          "allowed_bases": [{"id": b["id"], "label": b["label"], "authority": b["authority"]} for b in allowed_bases(decl)],
          "requirements": decl["selection"]["requirements"]}
@@ -216,9 +227,16 @@ def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, 
                f"見 {prep.blk_obs}）：不可新增股票、不可升級，既有部位凍結")
     else:
         blk = "今天不是高波動事件前一交易日"
+    if prep.us_window:
+        us_ev = ("美國重大事件（見 " + str(prep.us_obs) + "）："
+                 + "；".join(f"{e['name']}（美國時間 {e['date']}，今天為事件{rel}）" for e, rel in prep.us_window)
+                 + "——依規則 9 降低新建倉")
+    else:
+        us_ev = "今天不是美國重大事件的前 1 日或當日"
+    risk = ("風險訊號：" + "；".join(prep.macro_flags) + "——依規則 10 偏防禦") if prep.macro_flags else "總經風險訊號：無（VIX ≤ 25、2 年期殖利率單日變動 ≤ 15bp，或資料缺值）"
     fb = ("# 上一次輸出的問題（請修正後重新輸出完整 JSON）\n" + "\n".join(f"- {e}" for e in feedback)) if feedback else ""
     user = _render((PROMPT_DIR / USER_PROMPT).read_text(encoding="utf-8"), trade_date=ctx.trade_date,
-                   prev_date=ctx.prev_date, prompt_version=prompt_version(), blackout=blk,
+                   prev_date=ctx.prev_date, prompt_version=prompt_version(), blackout=blk, us_events=us_ev, macro_risk=risk,
                    declaration_summary=_decl_summary(decl),
                    current_picks="\n".join(cur) or "（目前沒有高信心名單：今天是首次建倉，請挑 10–12 檔）",
                    candidates="\n".join(cl), observations="\n".join(obs), feedback=fb)

@@ -1,9 +1,9 @@
 {
- "version": "2.2.0",
+ "version": "2.3.0",
  "status": "final",
- "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大；v2.2.0 總持股 23–24 檔、湊檔低重疊優先）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
+ "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大；v2.2.0 總持股 23–24 檔、湊檔低重疊優先；v2.3.0 改名「主動台灣焦點主題」、新理念「資金流向領先價格」、宣告因子加入美國重大事件／美國利率與市場波動／散戶關注度）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
  "etf": {
-  "name": "主動台灣核心優選 AI",
+  "name": "主動台灣焦點主題",
   "name_status": "final",
   "market": "台股（上市＋上櫃，限 universe_150）",
   "style": "集中主題＋事件驅動：10–12 檔高信心部位＋市值前 30 大湊檔數部位"
@@ -17,9 +17,104 @@
   "每一檔高信心部位都必須引用至少一則具名公開資訊（月營收、財報、法說會、投信連續買超、重大訊息），並說明為何是高或中信心；候選分數只負責排序，不是買進理由。",
   "Agent 只決定「哪幾檔、信心高或中」，權重由程式依信心等級換算、股數由官方公式推導，所有風控（單檔上限、持股檔數、現金、Active Share）由程式檢查。",
   "紀律化換股：沒有新證據就續抱（仍在候選前 30 名者預設續抱）、持有至少 3 個交易日、每日最多換 4 檔、成本下跌超過 12% 且無新正面事件即出場、美國高波動事件前一交易日不新增部位。",
-  "與主動型 ETF 前 15 大持股保持差異：候選分數對重疊扣分，Active Share 內部目標 ≥ 20%（官方門檻 15%）。"
+  "與主動型 ETF 前 15 大持股保持差異：候選分數對重疊扣分，Active Share 內部目標 ≥ 20%（官方門檻 15%）。",
+  "美國重大事件（FOMC、CPI、PCE、非農就業、NVIDIA／Apple／Microsoft／Alphabet／Amazon／Meta／AMD 財報、美國大選）的前 1 日與當日降低新建倉；VIX > 25 或美國 2 年期公債殖利率單日變動 > 15bp 視為風險訊號。",
+  "散戶關注度（Google 搜尋熱度、投資社群討論、融資變化）只是輔助：只能把個股信心升或降一級，不單獨觸發買賣。"
  ],
- "philosophy_statement": "本 ETF 由 AI Agent 依公開事件集中投資台股。程式每日以投信買超、相對強度與成交值放大篩出約 30 檔候選，並對主動型 ETF 重押的股票扣分；Agent 閱讀月營收、財報、法說會、投信連買與重大訊息，挑出 10 至 12 檔高信心股票，高信心配置 8%、中信心 5.5%，其餘以大型權值股小額湊足持股。每檔都須引用具名資訊；持有至少 3 日、每日最多換 4 檔、跌逾 12% 無新利多即停損，重大美國事件前一日不加碼，以紀律追求明顯偏離大盤的超額報酬。",
+ "philosophy_statement": "本基金以「資金流向領先價格」為核心信念，以投信買超為首要訊號，搭配外資動向、相對強勢與成交量異動，於台股市值前 150 大中集中配置 10–12 檔高信心標的，其餘以大型權值股分散風險。同時追蹤美國重大事件，包括聯準會利率決策、通膨與就業數據、科技巨頭財報，以及費城半導體指數與台積電 ADR 表現，研判其對台灣供應鏈的傳導，於事件前後調整曝險。並以 Google 搜尋熱度、投資社群討論與融資變化衡量散戶關注度，作為辨識題材升溫與過熱的輔助指標。決策由 AI Agent 依可查證之公開資料逐日推論，刻意降低與主流主動式 ETF 的持股重疊以追求差異化報酬，並嚴守單檔、現金與檔數上限。",
+ "factors": [
+  {
+   "id": "trust_flow",
+   "label": "投信買超",
+   "role": "primary",
+   "usage": "首要訊號：投信 5／10 日淨買超（成交值標準化）與連續買超天數，進入候選分數並可作為入選依據",
+   "sources": [
+    "twse",
+    "tpex"
+   ]
+  },
+  {
+   "id": "foreign_flow",
+   "label": "外資動向",
+   "role": "supporting",
+   "usage": "三大法人整體買賣超（市場級 observation），輔助判斷 regime",
+   "sources": [
+    "twse",
+    "tpex"
+   ]
+  },
+  {
+   "id": "relative_strength",
+   "label": "相對強勢",
+   "role": "supporting",
+   "usage": "20 日報酬相對 150 檔中位數，只作候選排序，不能單獨作為入選依據",
+   "sources": [
+    "twse",
+    "tpex"
+   ]
+  },
+  {
+   "id": "volume_change",
+   "label": "成交量異動",
+   "role": "supporting",
+   "usage": "近 5 日均成交值相對 20 日均的放大倍數，只作候選排序",
+   "sources": [
+    "twse",
+    "tpex"
+   ]
+  },
+  {
+   "id": "us_events",
+   "label": "美國重大事件",
+   "role": "risk_overlay",
+   "usage": "FOMC 利率決策、CPI、PCE、非農就業、科技巨頭財報（NVIDIA／Apple／Microsoft／Alphabet／Amazon／Meta／AMD）、美國大選，以及費城半導體指數與台積電 ADR 收盤（us_overnight）。事件前 1 日與當日降低新建倉；FOMC、NVIDIA 財報、美國大選的前一交易日由程式強制不新增、不升級",
+   "sources": [
+    "other",
+    "vendor"
+   ],
+   "calendar": "config/event_calendar.json",
+   "observation_topics": [
+    "us_events",
+    "event_calendar",
+    "us_overnight"
+   ]
+  },
+  {
+   "id": "macro",
+   "label": "美國利率與市場波動",
+   "role": "risk_overlay",
+   "usage": "FRED 日資料 DGS2（2 年期公債殖利率）、DFF（聯邦基金有效利率）、VIXCLS（VIX）、T10Y2Y（10Y−2Y 利差）；VIX > 25 或 DGS2 單日變動 > 15bp 視為風險訊號：regime 不判 risk_on、降低新建倉。歷史資料以 ALFRED（realtime_start／realtime_end）取當時版本",
+   "sources": [
+    "vendor"
+   ],
+   "series": [
+    "DGS2",
+    "DFF",
+    "VIXCLS",
+    "T10Y2Y"
+   ],
+   "risk_thresholds": {
+    "vix_max": 25.0,
+    "dgs2_daily_change_bp_max": 15.0
+   },
+   "observation_topics": [
+    "macro"
+   ]
+  },
+  {
+   "id": "retail_attention",
+   "label": "散戶關注度",
+   "role": "auxiliary",
+   "usage": "Google 搜尋熱度、投資社群討論、融資變化，用來辨識題材升溫與過熱；只能把個股信心升或降一級（medium↔high），不單獨觸發買賣、不能作為 picks 的 basis",
+   "sources": [
+    "vendor",
+    "twse",
+    "tpex"
+   ],
+   "max_conviction_shift": 1,
+   "can_trigger_trade": false
+  }
+ ],
  "benchmark": {
   "name": "市值加權上限基準 (b)",
   "definition": "投資範圍 150 檔中前一日有市值者，以市值（還原收盤價 × 發行股數）加權，2330 ≤ 20%、其他個股 ≤ 8%（超額按市值比例重分配），每日再平衡、不計成本。用於衡量集中策略的超額報酬；本 ETF 不追蹤此基準。",
@@ -162,9 +257,10 @@
   "min_hold_days": "高信心部位持有 ≥ 3 個交易日才可賣出或降級（觸發停損除外）",
   "max_swaps": "每日最多新增 4 檔、主動移出 4 檔（首次建倉不受限；停損出場不計入）",
   "stop_loss": "還原價相對成本（進場日成交均價）下跌超過 12%，且當日沒有新的正面事件 → 出場",
-  "event_blackout": "FOMC 利率決議、NVIDIA 財報、美國大選（config/event_calendar.json）的前一交易日：不新增部位、不升級，既有部位凍結（停損與漂移保護照常）",
+  "event_blackout": "FOMC 利率決議、NVIDIA 財報、美國大選（config/event_calendar.json）的前一交易日：不新增部位、不升級，既有部位凍結（停損與漂移保護照常）；其他美國重大事件（CPI、PCE、非農就業、其他科技巨頭財報）的前 1 日與當日由 Agent 降低新建倉",
   "state": "runs/state/conviction.json",
-  "keep_rank": "遲滯：已持有且仍在候選池前 30 名者預設續抱；要移出必須在 exits 引用該股今日的依據事實（財報、法說會、月營收、投信、重大訊息），候選分數或股價變動不構成移出理由"
+  "keep_rank": "遲滯：已持有且仍在候選池前 30 名者預設續抱；要移出必須在 exits 引用該股今日的依據事實（財報、法說會、月營收、投信、重大訊息），候選分數或股價變動不構成移出理由",
+  "macro_risk": "VIX > 25 或美國 2 年期公債殖利率單日變動 > 15bp：視為風險訊號，market_view 不判 risk_on、降低新建倉"
  },
  "fallback": {
   "name": "合規基準 A",
@@ -207,6 +303,7 @@
   "event_calendar": "config/event_calendar.json",
   "backtest_report": "docs/conviction_backtest.md",
   "fallback_backtest_report": "docs/final_strategy_backtest.md",
-  "agent_metadata_note": "agent_metadata.code_version 使用 git:<short sha>；本檔任何欄位變動都視為改版"
+  "agent_metadata_note": "agent_metadata.code_version 使用 git:<short sha>；本檔任何欄位變動都視為改版",
+  "macro_code": "esun_agent/collect/fred.py"
  }
 }

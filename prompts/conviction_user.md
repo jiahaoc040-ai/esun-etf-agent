@@ -2,6 +2,8 @@
 - 交易日（要繳交的 D-Plan）：{{trade_date}}；資料截止（決策日）：{{prev_date}}
 - 提示詞版本：{{prompt_version}}
 - {{blackout}}
+- {{us_events}}
+- {{macro_risk}}
 
 # 本 ETF 宣告（節錄）
 {{declaration_summary}}

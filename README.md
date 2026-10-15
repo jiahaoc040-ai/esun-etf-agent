@@ -1,11 +1,11 @@
 # esun-etf-agent
 
-玉山 AI CUP 2026「Agent 基金經理人」參賽程式（ETF「主動台灣核心優選 AI」，集中主題＋事件驅動）。
+玉山 AI CUP 2026「Agent 基金經理人」參賽程式（ETF「主動台灣焦點主題」，集中主題＋事件驅動）。
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env                                  # 填 TEAM_ID、GOOGLE_API_KEY
+cp .env.example .env                                  # 填 TEAM_ID、GOOGLE_API_KEY、FRED_API_KEY
 python -m pytest -q                                   # 全部測試
 python scripts/llm_smoke_test.py                      # 主模型與備援各呼叫一次
 python scripts/validate_dplan.py <D-Plan.json> --datapack <資料包.json>  # 單獨驗證一份 D-Plan（或 --ctx <context.json>）
@@ -96,7 +96,7 @@ BUY/ADD 的目標權重以前日收盤 ×1.10（漲停）壓力測試仍須 ≤ 
 
 ### 一次性設定
 
-1. `.env`：`TEAM_ID`、`GOOGLE_API_KEY`（Google AI Studio 免費方案），模型 ID 以 AI Studio 為準（`LLM_MODEL`、`LLM_FALLBACK_MODEL`）。
+1. `.env`：`TEAM_ID`、`GOOGLE_API_KEY`（Google AI Studio 免費方案）、`FRED_API_KEY`（FRED 總經數列；沒填則退回 fredgraph.csv），模型 ID 以 AI Studio 為準（`LLM_MODEL`、`LLM_FALLBACK_MODEL`）。
 2. 回補資料（第一次）：`python scripts/backfill_market.py`、`python scripts/fetch_shares.py`、`python scripts/fetch_etf_holdings.py --save-raw`。
    月營收「創新高」需要本機有 24 個月歷史：`python scripts/collect_data.py revenue-backfill --start 2024-09 --save-raw`；
    休市日：`python scripts/collect_data.py holidays`（daily_run 缺資料時也會自動抓）。

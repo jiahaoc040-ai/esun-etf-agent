@@ -277,7 +277,7 @@ def test_declaration_loads_and_matches_code():
     assert fb["tilt_limits"]["per_name_abs_delta"] == 0.03 and fb["portfolio_rules"]["ap_target"] == AP_T
     ids = {b["id"] for b in d["selection"]["allowed_bases"]}
     assert ids == {"financial_report", "investor_conference", "monthly_revenue", "trust_flow", "material_news"}
-    assert d["status"] == "final" and d["etf"]["name"] == "主動台灣核心優選 AI" and d["etf"]["name_status"] == "final"
+    assert d["status"] == "final" and d["etf"]["name"] == "主動台灣焦點主題" and d["etf"]["name_status"] == "final"
     assert fb["portfolio_rules"]["ap_target"] == AP_T and fb["portfolio_rules"]["ap_trigger"] == AP_TRIG
     by_id = {b["id"]: b for b in d["selection"]["allowed_bases"]}
     assert {i: set(b["authority"]) for i, b in by_id.items()} == {

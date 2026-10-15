@@ -1,30 +1,240 @@
 {
- "note": "高波動事件（美國日期）。事件當天的台股交易日（若事件日非交易日則為其前一個交易日）＝「前一交易日」，該日不新增部位、不升級。FOMC 取會議第二天（決議公布日）；NVIDIA 取財報公布日（美股盤後）。estimated=true 者為依往年慣例推估，公司正式公告後請更新（更新本檔＝改版）。",
+ "note": "美國重大事件（美國日期）。程式強制凍結（blackout=true；預設為 fomc、nvidia_earnings、us_election）：事件當天的台股交易日（若事件日非交易日則為其前一個交易日）＝「前一交易日」，該日不新增部位、不升級。其他事件（CPI、PCE、非農、其他科技巨頭財報）只在事件前 1 日與當日要求 Agent 降低新建倉（提示詞規則 9）。FOMC 取會議第二天（決議公布日）；財報取公布日（美股盤後）。每筆附官方來源 url；confirmed=false 表示尚未對官方頁面核對、estimated=true 為依往年慣例推估。to_confirm 是雲端連不到官方網站、尚未填日期的事件（不猜日期，程式忽略）；確認後移到 events 並設 confirmed=true（更新本檔＝改版）。",
+ "window": {
+  "start": "2026-10-26",
+  "end": "2026-11-27"
+ },
  "events": [
-  {"date": "2025-01-29", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2025-02-26", "kind": "nvidia_earnings", "name": "NVIDIA FY2025 Q4 財報"},
-  {"date": "2025-03-19", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2025-05-07", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2025-05-28", "kind": "nvidia_earnings", "name": "NVIDIA FY2026 Q1 財報"},
-  {"date": "2025-06-18", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2025-07-30", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2025-08-27", "kind": "nvidia_earnings", "name": "NVIDIA FY2026 Q2 財報"},
-  {"date": "2025-09-17", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2025-10-29", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2025-11-19", "kind": "nvidia_earnings", "name": "NVIDIA FY2026 Q3 財報"},
-  {"date": "2025-12-10", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2026-01-28", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2026-02-25", "kind": "nvidia_earnings", "name": "NVIDIA FY2026 Q4 財報"},
-  {"date": "2026-03-18", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2026-04-29", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2026-05-20", "kind": "nvidia_earnings", "name": "NVIDIA FY2027 Q1 財報", "estimated": true},
-  {"date": "2026-06-17", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2026-07-29", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2026-08-26", "kind": "nvidia_earnings", "name": "NVIDIA FY2027 Q2 財報", "estimated": true},
-  {"date": "2026-09-16", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2026-10-28", "kind": "fomc", "name": "FOMC 利率決議"},
-  {"date": "2026-11-03", "kind": "us_election", "name": "美國期中選舉"},
-  {"date": "2026-11-18", "kind": "nvidia_earnings", "name": "NVIDIA FY2027 Q3 財報", "estimated": true},
-  {"date": "2026-12-09", "kind": "fomc", "name": "FOMC 利率決議"}
+  {
+   "date": "2025-01-29",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2025-02-26",
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2025 Q4 財報",
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx"
+  },
+  {
+   "date": "2025-03-19",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2025-05-07",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2025-05-28",
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2026 Q1 財報",
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx"
+  },
+  {
+   "date": "2025-06-18",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2025-07-30",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2025-08-27",
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2026 Q2 財報",
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx"
+  },
+  {
+   "date": "2025-09-17",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2025-10-29",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2025-11-19",
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2026 Q3 財報",
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx"
+  },
+  {
+   "date": "2025-12-10",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2026-01-28",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2026-02-25",
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2026 Q4 財報",
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx"
+  },
+  {
+   "date": "2026-03-18",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2026-04-29",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2026-05-20",
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2027 Q1 財報",
+   "estimated": true,
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx"
+  },
+  {
+   "date": "2026-06-17",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2026-07-29",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2026-08-26",
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2027 Q2 財報",
+   "estimated": true,
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx"
+  },
+  {
+   "date": "2026-09-16",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  {
+   "date": "2026-10-28",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "confirmed": false,
+   "blackout": true,
+   "note": "FOMC 10/27–28 會議，取決議公布日；沿用 repo 既有日期，雲端無法連到 federalreserve.gov 核對"
+  },
+  {
+   "date": "2026-11-03",
+   "kind": "us_election",
+   "name": "美國期中選舉",
+   "url": "https://www.fec.gov/introduction-campaign-finance/election-results-and-voting-information/",
+   "confirmed": false,
+   "blackout": true,
+   "note": "法定日期（11 月第一個星期一後的星期二，2 U.S.C. §7）"
+  },
+  {
+   "date": "2026-11-18",
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2027 Q3 財報",
+   "estimated": true,
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx",
+   "confirmed": false,
+   "blackout": true
+  },
+  {
+   "date": "2026-12-09",
+   "kind": "fomc",
+   "name": "FOMC 利率決議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "confirmed": false,
+   "blackout": true
+  }
+ ],
+ "to_confirm": [
+  {
+   "kind": "cpi",
+   "name": "美國 CPI（2026 年 9 月與 10 月數據）",
+   "url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "what": "BLS 發布日；若落在 10/26～11/27 就加進 events"
+  },
+  {
+   "kind": "pce",
+   "name": "美國 PCE／個人所得與支出（Personal Income and Outlays）",
+   "url": "https://www.bea.gov/news/schedule",
+   "what": "BEA 發布日（10 月底與 11 月底各一次）"
+  },
+  {
+   "kind": "nfp",
+   "name": "美國非農就業（Employment Situation）",
+   "url": "https://www.bls.gov/schedule/news_release/empsit.htm",
+   "what": "BLS 發布日（11 月初、12 月初）"
+  },
+  {
+   "kind": "apple_earnings",
+   "name": "Apple FY2026 Q4 財報",
+   "url": "https://investor.apple.com/investor-relations/default.aspx",
+   "what": "公司公告的財報日（美股盤後）"
+  },
+  {
+   "kind": "microsoft_earnings",
+   "name": "Microsoft FY2027 Q1 財報",
+   "url": "https://www.microsoft.com/en-us/investor/events/events-recent",
+   "what": "公司公告的財報日（美股盤後）"
+  },
+  {
+   "kind": "alphabet_earnings",
+   "name": "Alphabet 2026 Q3 財報",
+   "url": "https://abc.xyz/investor/",
+   "what": "公司公告的財報日（美股盤後）"
+  },
+  {
+   "kind": "amazon_earnings",
+   "name": "Amazon 2026 Q3 財報",
+   "url": "https://ir.aboutamazon.com/events/default.aspx",
+   "what": "公司公告的財報日（美股盤後）"
+  },
+  {
+   "kind": "meta_earnings",
+   "name": "Meta 2026 Q3 財報",
+   "url": "https://investor.atmeta.com/investor-events/default.aspx",
+   "what": "公司公告的財報日（美股盤後）"
+  },
+  {
+   "kind": "amd_earnings",
+   "name": "AMD 2026 Q3 財報",
+   "url": "https://ir.amd.com/news-events/ir-calendar",
+   "what": "公司公告的財報日（美股盤後）"
+  },
+  {
+   "kind": "nvidia_earnings",
+   "name": "NVIDIA FY2027 Q3 財報",
+   "url": "https://investor.nvidia.com/events-and-presentations/default.aspx",
+   "what": "目前 2026-11-18 為推估（estimated），請以 IR 公告為準"
+  },
+  {
+   "kind": "fomc",
+   "name": "FOMC 10/27–28 會議",
+   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "what": "確認決議公布日仍為 2026-10-28"
+  }
  ]
 }

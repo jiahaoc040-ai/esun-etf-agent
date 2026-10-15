@@ -447,7 +447,7 @@ def load_event_calendar(path: Path | None = None) -> list[dict]:
     p = path or EVENT_CALENDAR_PATH
     if not p.exists():
         return []
-    return json.loads(p.read_text(encoding="utf-8"))["events"]
+    return [e for e in json.loads(p.read_text(encoding="utf-8"))["events"] if e.get("date")]
 
 
 def _next_weekday(d: date) -> date:
@@ -463,7 +463,35 @@ def blackout_events(trade_date: str, events: list[dict] | None = None, next_sess
     evs = load_event_calendar() if events is None else events
     t = date.fromisoformat(trade_date)
     nxt = date.fromisoformat(next_session) if next_session else _next_weekday(t)
-    return [e for e in evs if t <= date.fromisoformat(e["date"]) < nxt]
+    return [e for e in evs if is_blackout_event(e) and t <= date.fromisoformat(e["date"]) < nxt]
+
+
+# 程式強制凍結（不新增、不升級）的事件種類；其他美國事件（CPI、PCE、非農、其他科技巨頭財報）只在提示詞要求「降低新建倉」
+BLACKOUT_KINDS = frozenset({"fomc", "nvidia_earnings", "us_election"})
+
+
+def is_blackout_event(e: dict) -> bool:
+    return bool(e.get("blackout", e.get("kind") in BLACKOUT_KINDS))
+
+
+def us_event_window(trade_date: str, events: list[dict] | None = None,
+                    next_session: str | None = None) -> list[tuple[dict, str]]:
+    """美國事件的「前 1 日」與「當日」（以台股交易日計；美國事件在台北時間夜間揭曉，該台股交易日收盤前尚未公布）：
+      當日   = 事件美國日期 E 所在的台股交易日：trade_date ≤ E < 下一交易日
+      前 1 日 = 再前一個交易日：下一交易日 ≤ E < 下下個交易日
+    回傳 [(事件, "當日"|"前1日")]，依日期排序。next_session 未知時以平日近似。"""
+    evs = load_event_calendar() if events is None else events
+    t = date.fromisoformat(trade_date)
+    n1 = date.fromisoformat(next_session) if next_session else _next_weekday(t)
+    n2 = _next_weekday(n1)
+    out = []
+    for e in sorted(evs, key=lambda x: x["date"]):
+        d = date.fromisoformat(e["date"])
+        if t <= d < n1:
+            out.append((e, "當日"))
+        elif n1 <= d < n2:
+            out.append((e, "前1日"))
+    return out
 
 
 # --------------------------------------------------------------------------- 成本與報酬

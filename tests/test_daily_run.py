@@ -32,7 +32,7 @@ class Collector:
         self.calls.append((D.isoformat(), tuple(steps or ())))
         T = NEXT[D.isoformat()]
         inp = load_inputs(T)
-        if steps and set(steps) == {"taifex", "us"}:
+        if steps and set(steps) == {"taifex", "us", "macro"}:
             inp = json.loads(json.dumps(inp))
             if self.sox not in (None, "missing"):
                 inp["us"]["quotes"]["SOX"]["chg_pct"] = self.sox
@@ -42,7 +42,7 @@ class Collector:
             if self.tx is not None:
                 inp["taifex"]["chg_pct"] = self.tx
                 inp["taifex"]["session_date"] = T
-            inp = {k: v for k, v in inp.items() if k in ("us", "taifex")}
+            inp = {k: v for k, v in inp.items() if k in ("us", "taifex", "macro")}
         return CollectResult(D=D.isoformat(), inputs=inp, warnings=["測試：收集警告"], done=list(steps or ["all"]),
                              market_ok=True)
 
@@ -180,7 +180,7 @@ def test_morning_regenerates_only_on_big_moves(paths):
     col = Collector(sox=-3.4)
     big, out = go(paths, "2026-09-29", morning=True, now=morning, collector=col)
     assert big.regenerated is True and "SOX -3.40%" in out and "請重新上傳" in out
-    assert col.calls[0][1] == ("taifex", "us")
+    assert col.calls[0][1] == ("taifex", "us", "macro")
     doc = json.loads(big.dplan_path.read_text(encoding="utf-8"))
     assert any("-3.40%" in o["statement"] for o in doc["observations"] if o.get("topic") == "us_overnight") \
         or "-3.4" in json.dumps(doc, ensure_ascii=False)

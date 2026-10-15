@@ -231,7 +231,7 @@ def test_discipline_repair_mode():
 
 
 def test_blackout_calendar():
-    ev = [{"date": "2026-10-28", "kind": "fomc", "name": "FOMC"}, {"date": "2026-11-21", "kind": "x", "name": "週六事件"}]
+    ev = [{"date": "2026-10-28", "kind": "fomc", "name": "FOMC"}, {"date": "2026-11-21", "kind": "x", "name": "週六事件", "blackout": True}]
     assert cv.blackout_events("2026-10-28", ev) and not cv.blackout_events("2026-10-27", ev)
     assert cv.blackout_events("2026-11-20", ev)                       # 週五：下一交易日是週一 → 週六事件也算
     assert not cv.blackout_events("2026-10-29", ev)
@@ -295,7 +295,7 @@ def test_window_helpers():
 # ------------------------------------------------------------------ 宣告檔
 def test_declaration_v2_matches_code():
     d = load_declaration()
-    assert d["version"] == "2.2.0" and d["status"] == "final"
+    assert d["version"] == "2.3.0" and d["status"] == "final"
     assert d["portfolio_rules"]["n_total_min"] == 23 and d["portfolio_rules"]["n_total_max"] == 24
     r = d["portfolio_rules"]
     assert (r["w_high"], r["w_mid"], r["cap_other"], r["cap_tsmc"]) == (0.08, 0.055, 0.08, 0.20)

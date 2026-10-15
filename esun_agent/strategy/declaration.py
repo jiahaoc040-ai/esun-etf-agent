@@ -17,10 +17,14 @@ from .conviction import ConvictionParams
 from .final import FinalParams
 
 DECLARATION_PATH = ROOT / "config" / "strategy_declaration.json"
-REQUIRED_KEYS = ["version", "etf", "theme", "philosophy", "benchmark", "portfolio_rules", "candidate_rules",
+REQUIRED_KEYS = ["version", "etf", "theme", "philosophy", "factors", "benchmark", "portfolio_rules", "candidate_rules",
                  "rebalance_policy", "selection", "discipline", "fallback"]
 TILT_BASIS_IDS = {"financial_report", "investor_conference", "monthly_revenue", "trust_flow", "material_news"}
 SOURCE_AUTHORITIES = {"twse", "tpex", "taifex", "mops", "fininst", "media", "vendor"}
+REQUIRED_FACTORS = {"trust_flow", "us_events", "macro", "retail_attention"}
+FACTOR_ROLES = {"primary", "supporting", "risk_overlay", "auxiliary"}
+MACRO_SERIES = ["DGS2", "DFF", "VIXCLS", "T10Y2Y"]
+MACRO_THRESHOLDS = {"vix_max": 25.0, "dgs2_daily_change_bp_max": 15.0}   # 與 observations.macro_risk_flags 預設一致
 
 
 def load_declaration(path: Path | None = None) -> dict:
@@ -59,6 +63,33 @@ def allowed_bases(decl: dict) -> list[dict]:
     return decl["selection"]["allowed_bases"]
 
 
+def validate_factors(factors) -> list[str]:
+    """宣告因子：必須含 trust_flow（首要）、us_events、macro、retail_attention；散戶關注度只能升降一級、不單獨觸發買賣；
+    macro 數列與風險門檻必須與程式一致（collect/fred.MACRO_SERIES、observations.macro_risk_flags）。"""
+    if not isinstance(factors, list):
+        return ["factors 應為陣列"]
+    by_id = {f.get("id"): f for f in factors}
+    errs = [f"factors 缺 {i}" for i in sorted(REQUIRED_FACTORS - set(by_id))]
+    for f in factors:
+        if f.get("role") not in FACTOR_ROLES:
+            errs.append(f"factors.{f.get('id')}.role 不合法：{f.get('role')!r}")
+        if not f.get("sources") or not set(f["sources"]) <= SOURCE_AUTHORITIES | {"other"}:
+            errs.append(f"factors.{f.get('id')}.sources 不合法：{f.get('sources')}")
+    if "trust_flow" in by_id and by_id["trust_flow"].get("role") != "primary":
+        errs.append("factors.trust_flow 必須是 primary（首要訊號）")
+    ra = by_id.get("retail_attention")
+    if ra and (ra.get("role") != "auxiliary" or ra.get("max_conviction_shift") != 1 or ra.get("can_trigger_trade") is not False):
+        errs.append("factors.retail_attention 必須是 auxiliary、max_conviction_shift=1、can_trigger_trade=false")
+    m = by_id.get("macro")
+    if m:
+        from ..collect.fred import MACRO_SERIES as CODE_SERIES
+        if m.get("series") != list(CODE_SERIES) or m.get("series") != MACRO_SERIES:
+            errs.append(f"factors.macro.series 應為 {MACRO_SERIES}（與 collect/fred.py 一致）：{m.get('series')}")
+        if m.get("risk_thresholds") != MACRO_THRESHOLDS:
+            errs.append(f"factors.macro.risk_thresholds 應為 {MACRO_THRESHOLDS}：{m.get('risk_thresholds')}")
+    return errs
+
+
 def _match(rules: dict, obj, where: str, skip=()) -> list[str]:
     errs = []
     for f in fields(obj):
@@ -78,6 +109,7 @@ def validate_declaration(d: dict) -> list[str]:
     if errs:
         return errs
     errs += validate_submission(d)
+    errs += validate_factors(d["factors"])
     errs += _match(d["portfolio_rules"], ConvictionParams(), "portfolio_rules")
     errs += _match(d["candidate_rules"], CandidateParams(), "candidate_rules")
     errs += _match(d["fallback"].get("portfolio_rules", {}), FinalParams(), "fallback.portfolio_rules", skip=("ap_max_iter",))

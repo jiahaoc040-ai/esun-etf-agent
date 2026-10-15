@@ -9,6 +9,8 @@ authority 依 config/strategy_declaration.json 的 selection.allowed_bases：
 輸入格式（皆為 dict，時間 ISO +08:00）：
   taifex: {"url", "content_as_of", "session_date", "close", "chg_pct", "volume", "name"?}
   us:     {"url", "content_as_of", "name"?, "quotes": {"SOX": {"close", "chg_pct"}, "TSM": {...}, ...}}
+  macro:  {"series": {"DGS2": {"name", "unit", "date", "value", "prev_date", "prev_value", "chg", "chg_unit", "url"}, ...}}
+          （collect/fred.py；date 為觀測值實際日期，content_as_of 依它換算，不標成今天）
   events: [{"basis": 五種依據 id 或 null(一般新聞), "ticker": "2330"|null, "authority", "url", "name"?,
             "published_at"?, "content_as_of", "archive_url"?, "statement"(只寫事實), "values"(只放數字)}]
 """
@@ -237,6 +239,33 @@ def us_observation(b: EvidenceBuilder, d: dict) -> str:
     return b.add_obs(sids, "us_overnight", "美股／ADR 收盤：" + "、".join(parts), values)
 
 
+def macro_observations(b: EvidenceBuilder, d: dict) -> list[str]:
+    """FRED 總經數列 → 每個數列一則 topic=macro 的 observation（authority vendor、url 為 FRED 數列頁）。
+    content_as_of = 觀測值日期的美東 16:00（換成台北時間），不是抓取當天；values 只放數值與日變化。"""
+    from ..collect.us import close_time_taipei
+    out = []
+    for sid, q in (d.get("series") or {}).items():
+        as_of = close_time_taipei(q["date"])
+        src = b.add_source("vendor", q["url"], as_of, name=f"FRED {sid} {q['name']}")
+        unit, cu = q.get("unit", ""), q.get("chg_unit", "")
+        st = (f"{q['name']}（FRED {sid}）{q['date']} 為 {q['value']:,.2f}{unit}，"
+              f"較 {q['prev_date']} {q['chg']:+.2f}{cu}")
+        chg_key = "chg_bp" if cu == "bp" else "chg"
+        out.append(b.add_obs([src], "macro", st, {"value": q["value"], chg_key: q["chg"]}, as_of=as_of))
+    return out
+
+
+def macro_risk_flags(d: dict | None, vix_max: float = 25.0, dgs2_bp_max: float = 15.0) -> list[str]:
+    """提示詞用的風險訊號（不寫進 observation）：VIX > 25、2 年期殖利率單日變動絕對值 > 15bp。"""
+    s = (d or {}).get("series") or {}
+    flags = []
+    if "VIXCLS" in s and s["VIXCLS"]["value"] > vix_max:
+        flags.append(f"VIX {s['VIXCLS']['value']:.2f} > {vix_max:.0f}（{s['VIXCLS']['date']}）")
+    if "DGS2" in s and abs(s["DGS2"]["chg"]) > dgs2_bp_max:
+        flags.append(f"2 年期殖利率單日 {s['DGS2']['chg']:+.1f}bp，絕對值 > {dgs2_bp_max:.0f}bp（{s['DGS2']['date']}）")
+    return flags
+
+
 def event_observation(b: EvidenceBuilder, e: dict, declaration: dict | None = None) -> str:
     """一則 MOPS／新聞事件 → observation。basis 不為 None 時檢查 authority 是否為宣告檔允許的來源。"""
     decl = declaration or load_declaration()
@@ -269,7 +298,7 @@ def build_evidence(panel, date: str, *, inputs: dict | None = None, focus_ticker
                    carried: dict[str, list[dict]] | None = None, fetched_at: datetime | None = None,
                    declaration: dict | None = None) -> Evidence:
     """date = 決策日 D（資料描述的交易日）。回傳 Evidence（sources、observations、meta）。
-    順序：台股整體 → 三大法人整體 → 台指期夜盤 → 美股 → 個股投信連續買賣超 → 事件／新聞 → 沿用中的舊事件。"""
+    順序：台股整體 → 三大法人整體 → 台指期夜盤 → 美股 → 總經（FRED） → 個股投信連續買賣超 → 事件／新聞 → 沿用中的舊事件。"""
     inputs = inputs or {}
     b = EvidenceBuilder(fetched_at)
     market_overview(b, panel, date)
@@ -278,6 +307,8 @@ def build_evidence(panel, date: str, *, inputs: dict | None = None, focus_ticker
         taifex_observation(b, inputs["taifex"])
     if inputs.get("us"):
         us_observation(b, inputs["us"])
+    if inputs.get("macro"):
+        macro_observations(b, inputs["macro"])
     if focus_tickers:
         trust_flow_observations(b, panel, date, focus_tickers)
     for e in inputs.get("events", []):
@@ -306,6 +337,9 @@ def prune(ev: Evidence, used_obs: set[str]) -> tuple[list[dict], list[dict], dic
 # ----------------------------------------------------------------------------- 集中策略：候選池、部位、湊檔股、事件
 
 EVENT_URLS = {"fomc": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+              "cpi": "https://www.bls.gov/schedule/news_release/cpi.htm",
+              "nfp": "https://www.bls.gov/schedule/news_release/empsit.htm",
+              "pce": "https://www.bea.gov/news/schedule",
               "nvidia_earnings": "https://investor.nvidia.com/events-and-presentations/default.aspx",
               "us_election": "https://www.fec.gov/introduction-campaign-finance/election-results-and-voting-information/"}
 
@@ -374,3 +408,14 @@ def blackout_observation(b: EvidenceBuilder, events: list[dict], date: str, trad
     st = (f"{'、'.join(e['name'] for e in events)} 將於美國時間 {events[0]['date']} 揭曉，"
           f"在 {trade_date} 台股收盤之後")
     return b.add_obs([sid], "event_calendar", st, {"n_events": len(events)}, as_of=f"{date}T08:00:00+08:00")
+
+
+def us_events_observation(b: EvidenceBuilder, window: list[tuple[dict, str]], date: str, trade_date: str) -> str:
+    """美國重大事件（前 1 日／當日）排程 → topic=us_events（來源為各事件官方排程頁，authority other）。"""
+    sids = [b.add_source("other", e.get("url") or EVENT_URLS.get(e["kind"], EVENT_URLS["fomc"]),
+                         f"{date}T08:00:00+08:00", name=f"{e['name']} 排程") for e, _ in window[:5]]
+    st = "；".join(f"{e['name']}：美國時間 {e['date']}（對 {trade_date} 而言為事件{rel}）" for e, rel in window)
+    n_today = sum(rel == "當日" for _, rel in window)
+    return b.add_obs(sids, "us_events", st[:500], {"n_events": len(window), "n_event_day": n_today,
+                                                   "n_day_before": len(window) - n_today},
+                     as_of=f"{date}T08:00:00+08:00")

@@ -1,4 +1,4 @@
-"""每日收集：行情／三大法人（D 日）、ETF 前 15 大、MOPS 月營收與重大訊息、台指期夜盤、美股／ADR。
+"""每日收集：行情／三大法人（D 日）、ETF 前 15 大、MOPS 月營收與重大訊息、台指期夜盤、美股／ADR、FRED 總經數列（macro）。
 
 每一步獨立 try/except：失敗只記警告，降級為缺值（行情與三大法人例外——沒有 D 日行情就不能產生 D-Plan，由
 daily_run 判斷）。原始回應全部存到 raw_dir（runs/<交易日>/raw/collect/），供 12/2 審查與製作 fixture。
@@ -17,15 +17,16 @@ from .http import Fetcher
 from .news import collect_news
 from .revenue import collect_revenue, fact_event, last_reported_month
 from .taifex import collect_taifex
+from .fred import collect_macro
 from .us import collect_us
 
-ALL_STEPS = ("market", "inst", "etf", "revenue", "news", "taifex", "us")
+ALL_STEPS = ("market", "inst", "etf", "revenue", "news", "taifex", "us", "macro")
 
 
 @dataclass
 class CollectResult:
     D: str
-    inputs: dict = field(default_factory=dict)            # {"taifex", "us", "events"} → DayContext.inputs
+    inputs: dict = field(default_factory=dict)            # {"taifex", "us", "macro", "events"} → DayContext.inputs
     revenue_events: dict[str, dict] = field(default_factory=dict)   # ticker → 月營收事件（daily_run 依焦點名單篩選）
     warnings: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
@@ -139,8 +140,15 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
         if us:
             res.inputs["us"] = us
 
+    def do_macro():
+        m, warns = collect_macro(f, not_after=now.date())
+        res.warnings.extend(warns)
+        if m:
+            res.inputs["macro"] = m
+
     if "market" in steps:
         step("market", do_market)
-    for name, fn in (("etf", do_etf), ("revenue", do_revenue), ("news", do_news), ("taifex", do_taifex), ("us", do_us)):
+    for name, fn in (("etf", do_etf), ("revenue", do_revenue), ("news", do_news), ("taifex", do_taifex), ("us", do_us),
+                     ("macro", do_macro)):
         step(name, fn)
     return res
