@@ -41,4 +41,8 @@ launchd 在睡眠中錯過的排程，會在**醒來後**補跑一次——但�
 
 - `.env`（GOOGLE_API_KEY、TEAM_ID…）放在專案根目錄；launchd 不讀 shell 的設定檔，程式會自己讀 `.env`。
 - 第一次執行若 macOS 跳出「python 想要存取文件／桌面資料夾」，請允許；專案放在 `~/Documents` 以外（例如 `~/esun-etf-agent`）可避免這類權限問題。
-- 每天早上請打開 `runs/<交易日>/raw/summary_*.txt` 或 log 確認，並**原封不動**上傳 D-Plan。
+- **資料包在 `~/Downloads`**：macOS 預設不讓 launchd 執行的 python 讀「下載項目」。第一次跳出「python 想要存取下載項目資料夾」請允許；
+  沒跳出而摘要寫「無法讀取 …/Downloads」時，到「系統設定 → 隱私權與安全性 → 完整磁碟取用權限」加入 `.venv/bin/python`
+  （實際檔案路徑可用 `realpath .venv/bin/python` 查），或改把資料包放到專案的 `data/datapack/`。
+- 20:30 的排程只在 19:00 後已下載資料包時才會產生可上傳的 D-Plan；沒有資料包時摘要會標「不可上傳」，下載後手動重跑 `python scripts/daily_run.py`。
+- 每天請打開 `runs/<交易日>/raw/summary_*.txt` 或 log 確認，**原封不動**上傳 D-Plan、按「送出繳交」、到「每日數據 → 當日委託」核對。

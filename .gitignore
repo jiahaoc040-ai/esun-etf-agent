@@ -7,3 +7,4 @@ data/raw/
 runs/*/raw/
 runs/launchd/
 runs/state/llm_usage.json
+data/datapack/*.json

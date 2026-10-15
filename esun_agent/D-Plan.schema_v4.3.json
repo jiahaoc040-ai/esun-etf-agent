@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://esun-ai-challenge.tw/schemas/D-Plan.schema.json",
   "title": "D-Plan — 當日 Agent 決策報告及交易書",
-  "description": "每台股交易日繳交之單一 JSON 文件（每日唯一繳交物）。設計判準：欄位僅保留「稽核端無法自行重建、且驗證需要」之資訊；約束由 server 以官方公開資料純重算把關。結構層（本 schema）通過後另須通過語意層 C 檢查（verify_dplan.py）。歷次設計決策與取捨見 規格修訂_v*.md 系列。",
+  "description": "每台股交易日繳交之 JSON 文件（每日唯一繳交物），包含決策過程和當日委托內容。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -25,7 +25,9 @@
       "description": "非正式欄位：範例檔備註用，正式提交可省略"
     },
     "schema_version": {
-      "const": "4.2"
+      "type": "string",
+      "pattern": "^4\\.\\d+$",
+      "description": "規格版本，填 4.x（例如 4.3）"
     },
     "doc_type": {
       "const": "D-Plan"
@@ -33,10 +35,11 @@
     "team_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{1,32}$",
-      "description": "自我識別欄位；server 核對其與認證身分一致，不一致拒收"
+      "description": "隊伍ID，作為識別上傳檔案的隊伍欄位"
     },
     "trade_date": {
-      "$ref": "#/$defs/date"
+      "$ref": "#/$defs/date",
+      "description": "「本計劃書所對應之交易日（非繳交日）」"
     },
     "sources": {
       "type": "array",
@@ -58,7 +61,7 @@
     },
     "market_view": {
       "$ref": "#/$defs/market_view",
-      "description": "L2M 整體市場判斷鏈（v3.0 新增，必填）：市場級依據 → 走向研判 → 風險姿態 → 可驗證的部位含意。C12 硬檢查宣告與委託總效果的一致性"
+      "description": "L2M 整體市場判斷鏈（必填）：市場級依據 → 走向研判 → 風險姿態 → 可驗證的部位含意。系統會檢查宣告與委託總效果的一致性"
     },
     "inferences": {
       "type": "array",
@@ -72,7 +75,7 @@
     "decisions": {
       "type": "array",
       "minItems": 0,
-      "maxItems": 30,
+      "maxItems": 60,
       "items": {
         "$ref": "#/$defs/decision"
       },
@@ -85,16 +88,16 @@
       "items": {
         "$ref": "#/$defs/no_trade_decision"
       },
-      "description": "L3 決策層（續抱）：每檔未異動持股各一筆，附理由引用"
+      "description": "L3 決策層（續抱）：每檔未異動持股各一筆，附理由引用。未通過即整份退回"
     },
     "orders": {
       "type": "array",
       "minItems": 0,
-      "maxItems": 30,
+      "maxItems": 60,
       "items": {
         "$ref": "#/$defs/order"
       },
-      "description": "L4 委託層。C2: 必須逐位元等於 derive-orders.v2(decisions, 主辦方前日結算持股, 交易所公開收盤價, 前日結算 NAV)；現金與持股約束由 C9/C11 純 server 重算把關"
+      "description": "L4 委託層。須與《D-Plan 撰寫指南》§⑥ 的推導演算法（輸入為 decisions、資料包的前日結算持股與淨值、交易所前日收盤價）結果一致（比對 ticker / side / shares）"
     },
     "agent_metadata": {
       "$ref": "#/$defs/agent_metadata"
@@ -144,7 +147,7 @@
             "vendor",
             "other"
           ],
-          "description": "權威分級，決定稽核方式：twse/tpex/taifex/mops=交易所與主管機關公開資料（事後重抓比值）；fininst=投信/券商/銀行等金融機構發布之研究報告、基金與 ETF 資料；media=新聞媒體；vendor=行情/數據服務商（CMoney、富果 Fugle 等之 API 或數據）；fininst/media/vendor 皆為易變內容——不做 refetch 比對，內容佐證依賴 archive_url。分類依「內容性質」而非網站名稱：同一站的新聞報導屬 media、行情數據屬 vendor。v3.1: 競賽系統不提供資料，platform 已移除"
+          "description": "twse/tpex/taifex/mops=交易所與主管機關公開資料（事後重抓比值）；fininst=投信/券商/銀行等金融機構發布之研究報告、基金與 ETF 資料；media=新聞媒體；vendor=行情/數據服務商（CMoney、富果 Fugle 等之 API 或數據）；清單未涵蓋者填 other"
         },
         "url": {
           "type": "string",
@@ -158,7 +161,7 @@
         "archive_url": {
           "type": "string",
           "format": "uri",
-          "description": "選填。第三方存檔（web.archive.org / archive.today）。v3.3 起無證據包快照，此欄是 media/vendor 內容真實性的唯一外部佐證——強烈建議；有存檔者抽檢直接採信，無存檔之關鍵來源列合理性審查優先"
+          "description": "選填。第三方存檔（web.archive.org / archive.today）。此欄是 media/vendor 內容真實性的外部佐證，建議填入；有存檔者抽檢直接採信，無存檔之關鍵來源列合理性審查優先"
         },
         "published_at": {
           "$ref": "#/$defs/timestamp",
@@ -170,7 +173,7 @@
         },
         "fetched_at": {
           "$ref": "#/$defs/timestamp",
-          "description": "選填。抓取時刻僅供異常排查；有填時 C6 檢查 ≤ server 收件戳"
+          "description": "選填。抓取時刻僅供異常排查；有填時須 ≤ server 收件戳"
         }
       }
     },
@@ -191,12 +194,12 @@
         "source_ref": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 5,
+          "maxItems": 10,
           "items": {
             "type": "string",
             "pattern": "^S[0-9]{1,3}$"
           },
-          "description": "C1: 每個 id 必須存在於 sources"
+          "description": "每個 id 必須存在於 sources。未通過即整份退回"
         },
         "topic": {
           "type": "string",
@@ -214,7 +217,7 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "抽檢時逐值回對證據包快照（權威來源另可對公開資料重驗）；只收數字"
+          "description": "抽檢時逐值回對證據包快照；只收數字"
         }
       }
     },
@@ -238,7 +241,7 @@
             "type": "string",
             "pattern": "^O[0-9]{1,3}$"
           },
-          "description": "C1: 市場級依據（大盤、期貨夜盤、隔夜美股、匯率、巨集事件之 obs_id）"
+          "description": "市場級依據（大盤、期貨夜盤、隔夜美股、匯率、巨集事件之 obs_id）；每個 id 必須存在於 observations。未通過即整份退回"
         },
         "logic": {
           "type": "string",
@@ -276,7 +279,7 @@
                 "hold",
                 "reduce"
               ],
-              "description": "C12: 淨曝險意圖。收件時以 T-1 交易所收盤價重算委託淨流向比對：increase→淨買超；reduce→淨賣超；hold→|淨流向| ≤ 容差（server 參數，預設 2% NAV）。不一致拒收"
+              "description": "淨曝險意圖。收件時以 T-1 交易所收盤價重算委託淨流向比對：increase→淨買超；reduce→淨賣超；hold→|淨流向| ≤ 容差（server 參數，預設 2% NAV）。"
             },
             "target_cash_pct_range": {
               "type": "array",
@@ -287,7 +290,7 @@
                 "minimum": 0,
                 "maximum": 0.25
               },
-              "description": "C12: 目標現金區間 [下限, 上限]，須下限 ≤ 上限（語意層檢查）。收件時以 T-1 收盤價重算委託後預估現金比，落在區間外拒收。註：實際成交為 T 日均價，結算現金比會偏移——區間宣告請對 0%/25% 硬限留緩衝"
+              "description": "目標現金區間 [下限, 上限]，須下限 ≤ 上限。收件時以 T-1 收盤價重算委託後預估現金比，比對是否落在區間內。註：實際成交為 T 日均價，市值以 T 日收盤價計算"
             }
           }
         },
@@ -329,13 +332,13 @@
             "type": "string",
             "pattern": "^O[0-9]{1,3}$"
           },
-          "description": "C1: 每個 id 必須存在於 observations"
+          "description": "每個 id 必須存在於 observations。未通過即整份退回"
         },
         "logic": {
           "type": "string",
           "minLength": 20,
           "maxLength": 1000,
-          "description": "推導過程：哪些前提、為何成立（抽檢時對照公開說明書主題/因子審關聯性）"
+          "description": "推導過程：哪些前提、為何成立"
         },
         "conclusion": {
           "type": "string",
@@ -347,7 +350,8 @@
             "string",
             "null"
           ],
-          "maxLength": 500
+          "maxLength": 500,
+          "description": "與本推論相反的訊號；無則明填 null"
         },
         "confidence": {
           "type": "number",
@@ -381,23 +385,24 @@
             "ADD",
             "TRIM",
             "SELL_ALL"
-          ]
+          ],
+          "description": "決策動作：BUY 新建倉（前一交易日結算持股為 0）／ADD 加碼既有持股／TRIM 減碼但保留部位／SELL_ALL 全數出清"
         },
         "target_weight": {
           "type": "number",
           "minimum": 0,
           "maximum": 0.25,
-          "description": "schema 粗檢 ≤0.25（2330 專屬上限）；非 2330 之 ≤0.10 由 C9 重算把關。期初權重不申報——稽核端以主辦方前日結算紀錄為準（參賽端自行記帳追蹤）"
+          "description": "本日委託執行後之目標權重，由參賽者自訂；orders 推導（見《D-Plan 撰寫指南》§⑥）。單位為比率（0.19 = 19%），分母為前日結算淨值（資料包 account.nav_tradable）。"
         },
         "inference_refs": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 5,
+          "maxItems": 8,
           "items": {
             "type": "string",
             "pattern": "^I[0-9]{1,3}$"
           },
-          "description": "C1: 孤兒決策（無推論支撐）→ 拒收"
+          "description": "每個 id 必須存在於 inferences；每筆決策至少引用 1 筆推論（不得為孤兒決策）。未通過即整份退回"
         },
         "risk_check": {
           "type": "string",
@@ -413,7 +418,7 @@
             "type": "string",
             "pattern": "^D[0-9]{1,3}$"
           },
-          "description": "選填。資金調度宣告：本筆賣出（限 action=TRIM/SELL_ALL）是為了支應所列之同日 BUY/ADD 決策。C14 檢核：①引用存在且指向買進決策；②缺口存在性——不執行全部調度賣出時，重算現金比須低於 market_view.target_cash_pct_range 下限，否則「錢夠卻宣稱調度」與數字矛盾，拒件。動機可複合（訊號＋調度並存合法）；標記後推論應說明「為何選此標的讓位」之選擇邏輯"
+          "description": "選填。資金調度宣告：本筆賣出（限 action=TRIM/SELL_ALL）是為了支應所列之同日 BUY/ADD 決策。系統檢核：①引用存在且指向買進決策；②缺口存在性——不執行全部調度賣出時，重算現金比須低於 market_view.target_cash_pct_range 下限，否則「錢夠卻宣稱調度」與數字矛盾。動機可複合（訊號＋調度並存合法）；標記後推論應說明「為何選此標的讓位」之選擇邏輯"
         }
       }
     },
@@ -467,12 +472,12 @@
           "type": "integer",
           "minimum": 1000,
           "multipleOf": 1000,
-          "description": "整股限制（規則六(十)）：千股之正整數倍"
+          "description": "整股限制：千股之正整數倍。未通過即整份退回"
         },
         "decision_ref": {
           "type": "string",
           "pattern": "^D[0-9]{1,3}$",
-          "description": "C1 + C2"
+          "description": "須存在於 decisions，未通過即整份退回；本筆委託須與該決策的推導結果一致"
         },
         "derivation_detail": {
           "type": "string",
@@ -509,7 +514,7 @@
             "taide",
             "other"
           ],
-          "description": "模型供應商（自報，用於趨勢統計，非白名單）。自架開放權重模型請填**釋出權重的組織**（如 Llama → meta、Qwen → alibaba）；清單未涵蓋者填 other，並於 model_version 寫明。"
+          "description": "模型供應商。自架開放權重模型請填**釋出權重的組織**（如 Llama → meta、Qwen → alibaba）；清單未涵蓋者填 other，並於 model_version 寫明。"
         },
         "model_version": {
           "type": "string",
@@ -523,7 +528,7 @@
         },
         "run_completed_at": {
           "$ref": "#/$defs/timestamp",
-          "description": "C6: ≤ server 收件戳（自報時間，作時間鎖之輔助界標）"
+          "description": "自報之執行完成時間，須 ≤ server 收件戳"
         },
         "input_tokens": {
           "type": "integer",
@@ -545,7 +550,7 @@
           "minLength": 1,
           "maxLength": 64,
           "pattern": "^[A-Za-z0-9_.:/\\-]{1,64}$",
-          "description": "當日程式碼版本識別，格式不限——git commit（git:a1b2c3d）、版本號（v1.4.2）、或當日程式碼打包檔之 sha256 前綴皆可。12/2 資格審查（黑箱重現）時須能提出與此識別對應之該版本程式碼；影響決策行為的參數與提示詞模板皆屬版本之一部分（改參數＝改版）。注意：此欄僅對晉級隊伍具驗證力（僅晉級者繳交程式碼受審）"
+          "description": "當日程式碼版本識別，格式不限——git commit（git:a1b2c3d）、版本號（v1.4.2）、或當日程式碼打包檔之 sha256 前綴皆可。"
         }
       }
     }

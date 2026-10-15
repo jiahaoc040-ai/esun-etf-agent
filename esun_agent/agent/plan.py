@@ -7,17 +7,23 @@
   - posture 由實際委託推得：|買−賣| ≤ 2% 淨值 → hold，淨買超 → increase，淨賣超 → reduce；現金區間以估算現金比 ±2%
     （夾在 1%–22% 緩衝內，且一定包含估算值）。
   - funding_for 只在「缺口真的存在」時標記（C14）：拿掉被標記的調度賣出後，現金比會低於宣告區間下限。
+  - 合規保險：
+      被動超限（force_passive_trims）：前日結算權重（nav_tradable、T-1 收盤）> 9.5%（2330 > 24%），或資料包合規提示
+      點名的個股 → 強制 TRIM 回到目標權重（不受無交易帶影響、不會被延後）。
+      漲停壓力測試（stress_cap_buys）：BUY/ADD 的目標權重以 T-1 收盤 × 1.10 計仍須 ≤ 10%（2330 ≤ 25%），否則自動降權。
+  - action：前日結算 shares 為 0 才是 BUY，否則 ADD（receivable_shares 不算持股）。
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
 
-from ..config import CASH_BUFFER_HIGH, CASH_BUFFER_LOW, HOLD_TOLERANCE
+from ..config import CASH_BUFFER_HIGH, CASH_BUFFER_LOW, HOLD_TOLERANCE, passive_soft_limit, stress_cap
 from ..orders import derive_orders, estimate_flows, target_shares
 
 MIN_CASH_AFTER = 0.02
-MAX_DECISIONS = 30                # schema：decisions、orders 各最多 30 筆
+MAX_DECISIONS = 60                # schema v4.3：decisions、orders 各最多 60 筆（v4.2 為 30）
+STRESS_EPS = 1e-6                 # target_weight 會四捨五入到 6 位：壓力測試上限再減一點，避免進位後超過
 BUY_BUFFER = 0.03                 # 集中策略：每買進 NAV 的 10%，委託後現金比多留 0.3%（均價可能高於前日收盤）
 
 
@@ -59,10 +65,43 @@ def _build(target: dict[str, float], nav: float, close: dict[str, float], holdin
     return decisions, no_trade
 
 
+def passive_overweight(cur_w: dict[str, float]) -> dict[str, float]:
+    """前日結算權重 > 9.5%（2330 > 24%）的持股。"""
+    return {t: w for t, w in cur_w.items() if w > passive_soft_limit(t)}
+
+
+def force_passive_trims(target: dict[str, float], strategy: dict[str, float], cur_w: dict[str, float],
+                        forced: set[str], cap) -> tuple[dict[str, float], dict[str, float]]:
+    """forced 中的持股強制 TRIM 回到目標權重：min(策略目標, 內部單檔上限 cap(t))，且一定低於現權重。
+    （無交易帶或凍結可能把目標鎖在現權重，這裡覆寫。）回傳 (新目標, {代號: 新目標權重})。"""
+    out, done = dict(target), {}
+    for t in sorted(forced):
+        if t not in cur_w:
+            continue
+        w = min(strategy.get(t, 0.0), out.get(t, 0.0), cap(t))
+        if w >= cur_w[t]:
+            w = min(cap(t), cur_w[t] * 0.9)
+        out[t] = w
+        done[t] = w
+    return out, done
+
+
+def stress_cap_buys(target: dict[str, float], cur_w: dict[str, float]) -> tuple[dict[str, float], list[str]]:
+    """BUY/ADD（目標 > 現權重）的目標權重：漲停 ×1.10 後仍須 ≤ 個股上限 → 超過者自動降權。"""
+    out, notes = dict(target), []
+    for t, w in target.items():
+        cap = stress_cap(t) - STRESS_EPS
+        if w > cur_w.get(t, 0.0) and w > cap:
+            out[t] = max(cap, 0.0)
+            notes.append(f"stress_capped:{t} {w:.4f}→{out[t]:.4f}")
+    return out, notes
+
+
 def limit_decisions(target: dict[str, float], nav: float, close: dict[str, float], holdings: dict[str, int],
-                    max_n: int = MAX_DECISIONS) -> tuple[dict[str, float], list[str]]:
+                    max_n: int = MAX_DECISIONS, protect: set[str] | frozenset = frozenset()) -> tuple[dict[str, float], list[str]]:
     """一天的異動超過 max_n 檔（例如合規基準 A ↔ 集中組合的整體轉換）時，把最不重要的異動延到隔天：
-    先讓續抱者的小幅加減碼維持現權重（差距最小者優先），再延後權重最小的新建倉，最後延後出清（維持現權重）。"""
+    先讓續抱者的小幅加減碼維持現權重（差距最小者優先），再延後權重最小的新建倉，最後延後出清（維持現權重）。
+    protect（被動超限的強制減碼）不會被延後。"""
     cur = {t: n * close[t] / nav for t, n in holdings.items() if t in close}
     t = dict(target)
     notes: list[str] = []
@@ -70,19 +109,22 @@ def limit_decisions(target: dict[str, float], nav: float, close: dict[str, float
         decs, _ = _build(t, nav, close, holdings)
         if len(decs) <= max_n:
             break
-        cont = sorted((d for d in decs if d["action"] in ("ADD", "TRIM")),
+        cont = sorted((d for d in decs if d["action"] in ("ADD", "TRIM") and d["ticker"] not in protect),
                       key=lambda d: (abs(d["target_weight"] - cur.get(d["ticker"], 0.0)), d["ticker"]))
         buys = sorted((d for d in decs if d["action"] == "BUY"), key=lambda d: (d["target_weight"], d["ticker"]))
-        sells = sorted((d for d in decs if d["action"] == "SELL_ALL"), key=lambda d: (cur.get(d["ticker"], 0.0), d["ticker"]))
+        sells = sorted((d for d in decs if d["action"] == "SELL_ALL" and d["ticker"] not in protect),
+                       key=lambda d: (cur.get(d["ticker"], 0.0), d["ticker"]))
         if cont:
             x = cont[0]["ticker"]
             t[x] = cur[x]
         elif buys:
             x = buys[0]["ticker"]
             t.pop(x)
-        else:
+        elif sells:
             x = sells[0]["ticker"]
             t[x] = cur[x]
+        else:
+            break
         notes.append(f"deferred:{x}")
     if notes:
         notes = [f"decisions_limited:{len(notes)} 檔延到隔日（單日最多 {max_n} 筆）"] + notes
@@ -95,12 +137,16 @@ def _orders(decisions: list[dict], nav, close, holdings):
 
 
 def plan_orders(target: dict[str, float], nav: float, cash: float, close: dict[str, float],
-                holdings: dict[str, int], min_cash_after: float = MIN_CASH_AFTER, buy_buffer: float = 0.0) -> Plan:
-    """target = 目標權重（占 NAV）。回傳 Plan（decisions 尚未編號）。異動超過 30 檔時先以 limit_decisions 延後一部分。
+                holdings: dict[str, int], min_cash_after: float = MIN_CASH_AFTER, buy_buffer: float = 0.0,
+                protect: set[str] | frozenset = frozenset()) -> Plan:
+    """target = 目標權重（占 NAV）。回傳 Plan（decisions 尚未編號）。BUY/ADD 先過漲停壓力測試（stress_cap_buys）；
+    異動超過 60 檔時以 limit_decisions 延後一部分（protect 不延後）。
     委託後估算現金比需 ≥ min_cash_after + buy_buffer × 買進金額／NAV（買進用 T 日均價成交，可能比前日收盤貴；
     換股多的日子買得多，緩衝也要大）。"""
-    target, lim_notes = limit_decisions(target, nav, close, holdings)
     cur = {t: n * close[t] / nav for t, n in holdings.items() if t in close}
+    target, stress_notes = stress_cap_buys(target, cur)
+    target, lim_notes = limit_decisions(target, nav, close, holdings, protect=protect)
+    lim_notes = stress_notes + lim_notes
 
     def scaled(k: float) -> dict[str, float]:
         out = dict(target)

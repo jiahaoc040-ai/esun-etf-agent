@@ -1,8 +1,9 @@
 """美股收盤（SPX、NDX、SOX）與 TSM ADR：免金鑰來源，依代號各自的來源順序嘗試，全失敗才缺值。
 
   SPX、NDX  FRED（聖路易聯準銀行）CSV：https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500 ／ NASDAQ100
-            → 欄位 observation_date（舊版 DATE）,<series>；休市日值為 "."（略過）。
-  SOX、TSM  Yahoo chart JSON（瀏覽器 User-Agent；429 退避重試 2 次）→ Nasdaq API historical（瀏覽器 User-Agent）。
+            → 欄位 observation_date（舊版 DATE）,<series>；休市日值為 "."（略過）。FRED 回應慢：逾時 60 秒、失敗重試 2 次。
+  SOX、TSM  Yahoo chart JSON（瀏覽器 User-Agent；429 退避重試 2 次）→ Nasdaq API historical
+            （瀏覽器 User-Agent、Accept: application/json；assetclass 參數 SOX=index、TSM=stocks）。
   所有代號最後才試 Stooq 日線 CSV。
 漲跌 % = 最後兩個收盤價計算。content_as_of = 美東 16:00 換成台北時間（夏令 04:00、冬令 05:00）。
 任何代號全部來源失敗 → 該代號缺值；全部代號失敗 → None（daily_run 照常產生 D-Plan，只是少了美股 observation；
@@ -23,7 +24,11 @@ YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{s}?range=10d&int
 NASDAQ_URL = "https://api.nasdaq.com/api/quote/{s}/historical?assetclass={a}&limit=10"
 STOOQ_URL = "https://stooq.com/q/d/l/?s={s}&i=d"
 
-# 代號 → [(來源, 該來源的代號)]，依序嘗試
+FRED_TIMEOUT, FRED_RETRIES = 60, 3                   # 逾時 60 秒；第一次失敗後再重試 2 次
+NASDAQ_HEADERS = {"Accept": "application/json, text/plain, */*", "Origin": "https://www.nasdaq.com",
+                  "Referer": "https://www.nasdaq.com/"}
+
+# 代號 → [(來源, 該來源的代號)]，依序嘗試；Nasdaq 為 (代號, assetclass)
 SOURCES = {
     "SOX": [("yahoo", "%5ESOX"), ("nasdaq", ("SOX", "index")), ("stooq", "^sox")],
     "NDX": [("fred", "NASDAQ100"), ("stooq", "^ndx")],
@@ -104,7 +109,9 @@ def fetch_series(fetcher: Fetcher, kind: str, sym) -> tuple[list[tuple[str, floa
     """回傳 (序列, 實際網址)。失敗丟例外。"""
     if kind == "fred":
         url = FRED_URL.format(s=sym)
-        return parse_fred(decode(fetcher.get(url, name=f"us_fred_{sym}.csv", headers=BROWSER_HEADERS))), url
+        raw = fetcher.get(url, name=f"us_fred_{sym}.csv", headers=BROWSER_HEADERS, timeout=FRED_TIMEOUT,
+                          retries=FRED_RETRIES)
+        return parse_fred(decode(raw)), url
     if kind == "yahoo":
         url = YAHOO_URL.format(s=sym)
         raw = fetcher.get(url, name=f"us_yahoo_{sym.replace('%5E', '')}.json", headers=BROWSER_HEADERS,
@@ -113,8 +120,7 @@ def fetch_series(fetcher: Fetcher, kind: str, sym) -> tuple[list[tuple[str, floa
     if kind == "nasdaq":
         s, a = sym
         url = NASDAQ_URL.format(s=s, a=a)
-        raw = fetcher.get(url, name=f"us_nasdaq_{s}.json", headers={**BROWSER_HEADERS, "Origin": "https://www.nasdaq.com",
-                                                                     "Referer": "https://www.nasdaq.com/"}, retries=2)
+        raw = fetcher.get(url, name=f"us_nasdaq_{s}.json", headers={**BROWSER_HEADERS, **NASDAQ_HEADERS}, retries=2)
         return parse_nasdaq(json.loads(decode(raw))), url
     if kind == "stooq":
         url = STOOQ_URL.format(s=sym)

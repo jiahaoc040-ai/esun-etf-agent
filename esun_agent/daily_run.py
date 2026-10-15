@@ -3,7 +3,9 @@
 晚上（預設，20:30）：
   1. 交易日曆（TWSE 休市日）：T = 今天之後的下一個交易日；只在 T 的前一天晚上產生（--force 可略過）；D = 今天以前最近的交易日。
   2. 收集資料（collect.daily.collect_day）＋人工收件匣（data.inbox.load_inbox）；原始回應存 runs/<T>/raw/。
-  3. 帳務：自記帳推估到 D 收盤 → 讀 runs/official/<D>.json 對帳（差異列出、以官方為準）；沒有官方檔就用自記帳並大字警告。
+  3. 帳務：自記帳推估到 D 收盤 → 讀主辦方資料包 DataPack（data/datapack/ 或 ~/Downloads/ 中 trade_date=T 的最新檔，
+     複製到 runs/<T>/raw/datapack.json）逐檔對帳（差異列出、以資料包為準）。分母 nav_tradable、持股 shares、現金 cash。
+     結算尚未產生（missing 含 prev_settlement／account 為 null）→ 停止；找不到資料包 → 用自記帳並大字警告「不可上傳」。
   4. assemble_conviction_day（LLM 只給名單與信心等級）→ validate() → 有 ERROR 不輸出。
   5. 輸出 runs/<T>/D-Plan_<team_id>_<T>.json，LLM 輸入輸出、收件匣、log 存 runs/<T>/raw/，印摘要。
 清晨（--morning，06:50）：重抓美股與台指期夜盤；SOX 或夜盤 |變動| > 2% → 以前一晚的資料與狀態重新產生 D-Plan、
@@ -21,6 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import datapack as dpk
 from .agent.assemble import DayContext
 from .agent.conviction_agent import DayResult, assemble_conviction_day, write_conviction_dplan
 from .agent.conviction_state import STATE_PATH, ConvictionState
@@ -29,11 +32,11 @@ from .agent.llm_budget import load_dotenv
 from .collect import calendar as cal
 from .collect.daily import CollectResult, collect_day
 from .collect.http import Fetcher
-from .config import ROOT, TSMC
+from .config import ROOT, TSMC, passive_soft_limit
 from .data.etf_holdings import check_target_weights, load_top15
 from .data.inbox import INBOX_DIR, load_inbox, merge_into_inputs
-from .data.prices import load_panel
-from .official import LEDGER_PATH, OFFICIAL_DIR, load_ledger, load_official, project_to, reconcile, team_id
+from .data.prices import MARKET_DIR, load_panel
+from .official import LEDGER_PATH, TEAM_TBD, load_ledger, project_to, team_id
 from .strategy.candidates import screen
 from .strategy.conviction import load_event_calendar
 from .strategy.factors import compute_factors, factors_on
@@ -51,10 +54,15 @@ MAX_SUBMISSIONS = 25
 @dataclass
 class Paths:
     runs: Path = RUNS_DIR
-    official: Path = OFFICIAL_DIR
     ledger: Path = LEDGER_PATH
     state: Path = STATE_PATH
     inbox: Path = INBOX_DIR
+    market: Path = MARKET_DIR                   # 「本機是否已有 D 日行情」的判斷
+    datapack: Path | None = None                # None → data/datapack/
+    downloads: Path | None = None               # None → ~/Downloads/
+
+    def datapack_dirs(self) -> list[Path]:
+        return [self.datapack or dpk.DATAPACK_DIR, self.downloads or dpk.DOWNLOADS_DIR]
 
     def day(self, T: str) -> Path:
         return self.runs / T
@@ -72,6 +80,11 @@ class RunResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     regenerated: bool | None = None             # --morning：是否重新產生
+    uploadable: bool = False                    # 有當日資料包且 0 ERROR 才可上傳
+
+
+class StopRun(RuntimeError):
+    """資料包顯示不能繼續（結算尚未產生、不是本次 T、不是本隊…）：不輸出 D-Plan。"""
 
 
 class Log:
@@ -146,38 +159,82 @@ def decide_dates(now: datetime, hol: set[str], trade_date: str | None = None) ->
 
 # --------------------------------------------------------------------------- 帳務
 
-def accounts(D: str, panel, paths: Paths, team: str, log: Log, warnings: list[str]):
-    """回傳 (prev_nav, cash, holdings, ledger, official 或 None)。ledger 已更新到 D（以官方為準），尚未存檔。"""
-    avg = {t: float(v) for t, v in panel.avg_price.loc[D].dropna().items()}
-    close = {t: float(v) for t, v in panel.close.loc[D].dropna().items()}
-    led = load_ledger(paths.ledger)
-    est, w, applied = project_to(D, led, avg, close, team, paths.runs)
-    warnings.extend(w)
-    led.cash, led.holdings, led.as_of = est["cash"], dict(est["holdings"]), D
-    off = None
-    try:
-        off = load_official(D, paths.official)
-    except (ValueError, json.JSONDecodeError) as e:
-        warnings.append(f"官方帳務檔 runs/official/{D}.json 格式錯誤：{e}——改用自記帳")
-    if off is None:
-        msg = (f"找不到官方帳務 runs/official/{D}.json：改用自記帳推估（NAV {est['nav']:,.0f}）。"
-               "賣出股數若超過後台庫存整份會被拒收（C13）——請先填官方帳務再重跑！")
+@dataclass
+class Accounts:
+    nav: float                                  # nav_tradable
+    cash: float
+    holdings: dict[str, int]                    # shares（不含應收配股）
+    ledger: object                              # 已更新到 D（以資料包為準），尚未存檔
+    datapack: dpk.DataPack | None
+    team: str
+
+
+NO_DATAPACK = "不可上傳"
+
+
+def load_day_datapack(Ts: str, Ds: str, paths: Paths, team: str, raw: Path, log: Log,
+                      warnings: list[str]) -> dpk.DataPack | None:
+    """找交易日 T 的資料包並複製到 raw/datapack.json；不能用時丟 StopRun；找不到回傳 None。"""
+    errs: list[str] = []
+    p = dpk.find_datapack(Ts, paths.datapack_dirs(), errs)
+    if p is None:
+        msg = (f"找不到交易日 {Ts} 的資料包（DataPack）：已在 {', '.join(str(d) for d in paths.datapack_dirs())} 找過。"
+               f"改用自記帳產生 D-Plan——此 D-Plan {NO_DATAPACK}！請 19:00 後到後台「文件繳交 → 下載資料包」，"
+               "放進 ~/Downloads 後重跑")
+        warnings.extend(errs)
         warnings.append(msg)
-        log(banner(msg))
-        return est["nav"], est["cash"], dict(est["holdings"]), led, None
-    warnings.extend(off.warnings)
-    if off.team_id != team:
-        warnings.append(f"官方帳務的 team_id {off.team_id} 與 TEAM_ID {team} 不同")
-    diffs = reconcile(led, off, est["nav"])
+        log(banner(msg + ("\n!!  " + "\n!!  ".join(errs) if errs else "")))
+        return None
+    raw.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(p, raw / "datapack.json")
+    log(f"資料包：{p}（已複製到 {raw / 'datapack.json'}）")
+    try:
+        dp = dpk.load_datapack(p, Ts, None if team == TEAM_TBD else team)
+    except dpk.NotSettledError as e:
+        raise StopRun(f"{dpk.NOT_SETTLED_MSG}！（{p.name}：{e}）——不產生 D-Plan，不可當成空手") from e
+    except dpk.DataPackError as e:
+        raise StopRun(f"資料包不能用：{e}（{p}）——不產生 D-Plan") from e
+    if dp.as_of_date is not None and dp.as_of_date != Ds:
+        raise StopRun(f"資料包 as_of_date {dp.as_of_date} ≠ 決策日 D={Ds}（T={Ts} 的前一交易日）——請確認交易日或重新下載")
+    if dp.as_of_date is None:
+        log(f"資料包 as_of_date 為 null 且 missing 為空：第一個交易日，全現金（{dp.cash:,.0f}）建倉")
+    warnings.extend(dp.warnings)
+    return dp
+
+
+def accounts(Ts: str, Ds: str, panel, paths: Paths, team: str, raw: Path, log: Log, warnings: list[str]) -> Accounts:
+    """自記帳推估到 D 收盤，與資料包逐檔對帳（以資料包為準）。沒有資料包時用自記帳（不可上傳）。"""
+    avg = {t: float(v) for t, v in panel.avg_price.loc[Ds].dropna().items()}
+    close = {t: float(v) for t, v in panel.close.loc[Ds].dropna().items()}
+    dp = load_day_datapack(Ts, Ds, paths, team, raw, log, warnings)
+    if dp is not None and team == TEAM_TBD:
+        warnings.append(f"TEAM_ID 未設定，改用資料包的 team_id {dp.team_id}——請在 .env 設定 TEAM_ID={dp.team_id}")
+        team = dp.team_id
+    led = load_ledger(paths.ledger)
+    est, w, _ = project_to(Ds, led, avg, close, team, paths.runs)
+    warnings.extend(w)
+    led.cash, led.holdings, led.as_of = est["cash"], dict(est["holdings"]), Ds
+    if dp is None:
+        return Accounts(est["nav"], est["cash"], dict(est["holdings"]), led, None, team)
+    diffs = dpk.reconcile(led.holdings, led.cash, dp)
     if diffs:
-        log(f"對帳差異（以官方為準，共 {len(diffs)} 項）：")
+        log(f"對帳差異（自記帳 vs 資料包，以資料包為準，共 {len(diffs)} 項）：")
         for d in diffs:
             log(f"  - {d}")
-        warnings.append(f"自記帳與官方帳務有 {len(diffs)} 項差異，已以官方為準")
+        warnings.append(f"自記帳與資料包有 {len(diffs)} 項差異，已以資料包為準")
     else:
-        log("對帳：自記帳與官方帳務一致")
-    led.overwrite_from_official(off.holdings, off.cash)
-    return off.nav, off.cash, dict(off.holdings), led, off
+        log("對帳：自記帳與資料包一致")
+    if abs(est["nav"] - dp.nav) > 0.001 * dp.nav:
+        warnings.append(f"NAV：自記推估 {est['nav']:,.0f} ≠ 資料包 nav_tradable {dp.nav:,.0f}（以資料包為準）")
+    bad_px = [f"{t} 交易所 {close[t]:,} ≠ 資料包 {p:,}" for t, p in sorted(dp.close.items())
+              if t in dp.holdings and t in close and abs(close[t] - p) > 1e-6 * max(p, 1)]
+    if bad_px:
+        warnings.append(f"T-1 收盤價與資料包 close_price 不同（委託以交易所收盤為準）：{'；'.join(bad_px[:5])}")
+    no_px = sorted(t for t in dp.holdings if t not in close)
+    if no_px:
+        warnings.append(f"資料包持股 {no_px} 沒有交易所 {Ds} 收盤價，當日無法交易（列為 no_trade）")
+    led.overwrite_from_official(dp.holdings, dp.cash)
+    return Accounts(dp.nav, dp.cash, dict(dp.holdings), led, dp, team)
 
 
 # --------------------------------------------------------------------------- 摘要
@@ -190,7 +247,7 @@ WARNING_SOURCES = [
     ("台指期夜盤", ("台指期", "夜盤", "[taifex]")),
     ("美股", ("美股", "SOX", "NDX", "SPX", "TSM", "[us]")),
     ("ETF 持股", ("ETF", "[etf]")),
-    ("帳務", ("官方", "自記帳", "對帳", "TEAM_ID", "帳務", "team_id")),
+    ("帳務／資料包", ("資料包", "DataPack", "官方", "自記帳", "對帳", "TEAM_ID", "帳務", "team_id")),
     ("LLM", ("LLM", "降級", "模型")),
     ("行情／法人", ("行情", "T86", "三大法人", "法人", "[market]", "[inst]")),
     ("日曆／提交", ("休市", "交易日", "繳交", "提交", "版本", "D-Plan")),
@@ -220,7 +277,9 @@ def format_warnings(warnings: list[str]) -> list[str]:
 
 
 def summarize(res: DayResult, ctx: DayContext, path: Path | None, warnings: list[str], llm) -> str:
+    """dp（ctx.datapack）的合規 warn／fail 印在最上方；沒有資料包時最後一行是「不可上傳」。"""
     doc = res.doc
+    dp = ctx.datapack
     nav, close = ctx.prev_nav, ctx.prev_close
     post = dict(ctx.holdings)
     for o in doc["orders"]:
@@ -232,7 +291,14 @@ def summarize(res: DayResult, ctx: DayContext, path: Path | None, warnings: list
     cash_after = (ctx.cash - buy + sell) / nav
     names = load_universe()
     picks = res.state.picks
-    L = ["", "=" * 72, f"D-Plan 摘要｜交易日 {ctx.trade_date}（決策日 {ctx.prev_date}）｜隊伍 {ctx.team_id}", "=" * 72,
+    L = [""]
+    alerts = dpk.alert_lines(dp) if dp is not None else []
+    if alerts:
+        L += ["!" * 72, f"!! 資料包合規紀錄（warn／fail 共 {len(alerts)} 筆；違規 {dp.violations} 天、提示 {dp.notices} 列）"]
+        L += [f"!! {a}" for a in alerts] + ["!" * 72]
+    L += ["=" * 72, f"D-Plan 摘要｜交易日 {ctx.trade_date}（決策日 {ctx.prev_date}）｜隊伍 {ctx.team_id}", "=" * 72]
+    L += dpk.summary_lines(dp) if dp is not None else [f"資料包：無——帳務用自記帳推估（{NO_DATAPACK}）"]
+    L += [
          f"模式：{ {'llm': 'Agent 正常產生', 'hold': '降級：凍結既有名單', 'base': '降級：合規基準 A'}[res.mode] }"
          f"｜模型 {doc['agent_metadata']['model_provider']}/{doc['agent_metadata']['model_version']}"
          f"｜LLM 嘗試 {len(res.attempts)} 次｜tokens 入 {res.usage['input']:,} 出 {res.usage['output']:,}"]
@@ -244,7 +310,7 @@ def summarize(res: DayResult, ctx: DayContext, path: Path | None, warnings: list
     L.append("持股（委託後估算權重）：")
     for t, x in sorted(w.items(), key=lambda kv: -kv[1]):
         tag = f"高信心-{'高' if picks[t].level == 'high' else '中'}" if t in picks else "湊檔"
-        L.append(f"  {t} {names.get(t, {}).get('name', ''):<6} {x:6.2%}  {tag}{'  ⚠ 接近上限' if x > (0.24 if t == TSMC else 0.095) else ''}")
+        L.append(f"  {t} {names.get(t, {}).get('name', ''):<6} {x:6.2%}  {tag}{'  ⚠ 接近上限' if x > passive_soft_limit(t) else ''}")
     if doc["orders"]:
         L.append("委託：")
         dec = {d["decision_id"]: d for d in doc["decisions"]}
@@ -262,8 +328,11 @@ def summarize(res: DayResult, ctx: DayContext, path: Path | None, warnings: list
     if warnings:
         L.append(f"流程警告（{len(warnings)} 則，依來源）：")
         L += format_warnings(warnings)
-    if path is not None:
-        L += ["", "★ 請原封不動上傳此檔：", f"  {path}"]
+    if path is not None and dp is None:
+        L += ["", f"✗✗✗ {NO_DATAPACK}：沒有當日資料包，帳務是自記帳推估（可能超賣而整份被拒）。檔案僅供參考：", f"  {path}",
+              "    → 19:00 後到後台下載資料包，放進 ~/Downloads，重跑 python scripts/daily_run.py"]
+    elif path is not None:
+        L += ["", "★ 請原封不動上傳此檔，上傳後按「送出繳交」，再到「每日數據 → 當日委託」核對：", f"  {path}"]
     L.append("=" * 72)
     return "\n".join(L)
 
@@ -340,6 +409,9 @@ def run(*, now: datetime | None = None, morning: bool = False, force: bool = Fal
         if morning:
             return _morning(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, team, do_archive)
         return _evening(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, team, do_archive)
+    except StopRun as e:
+        log(banner(str(e)))
+        return RunResult(1, Ts, errors=[str(e)], warnings=warnings)
     except Exception as e:  # noqa: BLE001 - 任何未預期錯誤：不輸出 D-Plan，完整記錄
         log(banner(f"daily_run 失敗：{type(e).__name__}: {e}——沒有輸出 D-Plan"))
         log(traceback.format_exc())
@@ -355,10 +427,12 @@ def _build_and_write(now, Ts, Ds, paths, raw, inputs, state, llm_factory, log, w
     factors = compute_factors(panel)
     caps = market_cap(panel)[0]
     top15 = load_top15()
-    prev_nav, cash, holdings, led, off = accounts(Ds, panel, paths, team, log, warnings)
+    acc = accounts(Ts, Ds, panel, paths, team, raw, log, warnings)
+    led = acc.ledger
     llm = _make_llm(llm_factory, warnings)
-    ctx = DayContext(team_id=team, trade_date=Ts, prev_date=Ds, panel=panel, factors=factors, caps=caps, top15=top15,
-                     prev_nav=prev_nav, cash=cash, holdings=holdings, inputs=inputs, fetched_at=now)
+    ctx = DayContext(team_id=acc.team, trade_date=Ts, prev_date=Ds, panel=panel, factors=factors, caps=caps, top15=top15,
+                     prev_nav=acc.nav, cash=acc.cash, holdings=acc.holdings, inputs=inputs, fetched_at=now,
+                     datapack=acc.datapack)
     log(f"組裝 D-Plan（LLM {getattr(llm, 'provider', '?')}/{getattr(llm, 'model', '?')}）…")
     res = assemble_conviction_day(ctx, llm, state, events=load_event_calendar())
     save_attempts(res, llm, raw)
@@ -387,7 +461,9 @@ def _build_and_write(now, Ts, Ds, paths, raw, inputs, state, llm_factory, log, w
     summary = summarize(res, ctx, path, warnings, llm)
     (raw / f"summary_{kind}.txt").write_text(summary, encoding="utf-8")
     log(summary)
-    return RunResult(0, Ts, path, summary, warnings, [])
+    if acc.datapack is None:
+        log(banner(f"沒有資料包：這份 D-Plan {NO_DATAPACK}（下載資料包放進 ~/Downloads 後重跑）"))
+    return RunResult(0, Ts, path, summary, warnings, [], uploadable=acc.datapack is not None)
 
 
 def _evening(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, team, do_archive):
@@ -396,7 +472,7 @@ def _evening(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, tea
     col: CollectResult = collector(D, raw / "collect", now=now, do_archive=do_archive)
     warnings.extend(col.warnings)
     log(f"  完成：{', '.join(col.done) or '（無）'}；警告 {len(col.warnings)} 則")
-    if not col.market_ok and not (ROOT / "data" / "market" / f"{Ds}.parquet").exists():
+    if not col.market_ok and not (paths.market / f"{Ds}.parquet").exists():
         if col.market_not_ready:
             msg = (f"{Ds} 的收盤行情尚未公布（交易所最新資料仍是前一交易日）——不產生 D-Plan；請稍後重跑"
                    f"（決策日會一直是 {Ds}：若改用前一交易日，下單會用不含今天成交的庫存而可能超賣）")

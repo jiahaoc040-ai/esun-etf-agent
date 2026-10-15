@@ -133,7 +133,7 @@ def test_cli(tmp_path, capsys):
     spec = importlib.util.spec_from_file_location("make_doc", Path(__file__).parent.parent / "scripts" / "make_strategy_doc.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.main(["--out", str(tmp_path / "o.docx"), "--form-only"]) == 0
+    assert mod.main(["--out", str(tmp_path / "o.docx"), "--form-only", "--no-pdf"]) == 0
     assert (tmp_path / "o.docx").exists()
     missing = sd.SUMMARY_PATH
     if not missing.exists():
@@ -150,3 +150,53 @@ def test_real_summary_file_builds_when_present(tmp_path):
 
 def pct_in(x, t):
     return sd.pct(x) in t
+
+
+# ------------------------------------------------------------------ PDF（主辦方只收 PDF）
+def _pdf_text(p):
+    from pypdf import PdfReader
+    r = PdfReader(str(p))
+    return len(r.pages), "\n".join(pg.extract_text() or "" for pg in r.pages)
+
+
+def _need_font():
+    try:
+        sd.register_cjk_font()
+    except sd.DocError as e:
+        pytest.skip(str(e))
+
+
+def test_pdf_via_reportlab_keeps_docx_and_content(tmp_path):
+    _need_font()
+    decl = load_declaration()
+    dx, pdf = sd.build_strategy_pdf(tmp_path / "doc.pdf", docx_out=tmp_path / "doc.docx", engine="reportlab",
+                                    summary=SUMMARY)
+    assert dx.exists() and pdf.exists() and pdf.read_bytes()[:5] == b"%PDF-"
+    n, text = _pdf_text(pdf)
+    flat = "".join(text.split())
+    assert n >= 2
+    for s_ in (decl["etf"]["name"], "補充說明", "一、投組結構", "market_view"):
+        assert "".join(s_.split()) in flat, s_
+    assert b"/FontFile2" in pdf.read_bytes()                             # 中文字型有內嵌（TrueType），不靠檢視器的語言包
+
+
+def test_pdf_engine_choice(tmp_path, monkeypatch):
+    _need_font()
+    dx = sd.build_strategy_doc(tmp_path / "f.docx", summary=SUMMARY, form_only=True)
+    monkeypatch.setattr(sd, "find_soffice", lambda: None)
+    with pytest.raises(sd.DocError, match="LibreOffice"):
+        sd.docx_to_pdf(dx, engine="soffice")
+    assert sd.docx_to_pdf(dx, engine="auto").suffix == ".pdf"           # 沒有 LibreOffice → 自動改用 reportlab
+    with pytest.raises(sd.DocError):
+        sd.docx_to_pdf(dx, engine="word")
+
+
+def test_cli_writes_pdf(tmp_path, monkeypatch):
+    _need_font()
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("make_doc", Path(__file__).parent.parent / "scripts" / "make_strategy_doc.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.main(["--out", str(tmp_path / "o.docx"), "--form-only", "--pdf-engine", "reportlab"]) == 0
+    assert (tmp_path / "o.docx").exists() and (tmp_path / "o.pdf").exists()

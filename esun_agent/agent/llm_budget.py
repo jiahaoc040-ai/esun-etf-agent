@@ -35,9 +35,12 @@ def estimate_tokens(text: str) -> int:
     return cjk + (len(text) - cjk + 3) // 4
 
 
+DOTENV_PATH = ROOT / ".env"           # 測試會把它指到不存在的路徑，避免讀到本機真實 .env
+
+
 def load_dotenv(path: Path | None = None) -> list[str]:
     """讀 .env（KEY=VALUE；# 註解）；不覆寫已存在的環境變數。回傳設定的鍵名。"""
-    p = path or ROOT / ".env"
+    p = path or DOTENV_PATH
     out = []
     if not p.exists():
         return out

@@ -278,8 +278,9 @@ def test_real_b_global_etfs_keep_non_tw_symbols():
     assert len(r["holdings"]) == 15
 
 
-def test_committed_top15_snapshot_matches_real_pages_and_is_complete():
-    snap = json.loads((Path(__file__).parent.parent / "data" / "etf_top15" / "2026-10-11.json").read_text(encoding="utf-8"))
+def test_committed_top15_snapshot_matches_real_pages_and_is_complete(tmp_path):
+    snap_path = Path(__file__).parent.parent / "data" / "etf_top15" / "2026-10-11.json"      # 指定日期的 commit 快照
+    snap = json.loads(snap_path.read_text(encoding="utf-8"))
     src = eh.load_sources()
     expected = {c for c, s in src.items() if not s["overseas"]}
     assert set(snap["top15"]) == expected and len(expected) == 27 and snap["stale"] == {}
@@ -289,7 +290,11 @@ def test_committed_top15_snapshot_matches_real_pages_and_is_complete():
         r = real_b(code)
         assert snap["top15"][code] == r["holdings"] and snap["raw"][code] == r["raw"]
         assert snap["data_dates"][code] == r["data_date"]
-    assert eh.load_top15() == snap["top15"]                               # 預設讀取最新一份
+    # 預設讀取最新一份：在暫存資料夾放一份較舊的檔，確認取到日期最新者（不讀本機 data/etf_top15 的最新檔）
+    older = {**snap, "top15": {"00981A": {"2330": 0.1}}}
+    (tmp_path / "2026-10-01.json").write_text(json.dumps(older), encoding="utf-8")
+    (tmp_path / "2026-10-11.json").write_text(snap_path.read_text(encoding="utf-8"), encoding="utf-8")
+    assert eh.load_top15(base=tmp_path) == snap["top15"]
 
 
 def test_active_share_vs_real_etfs_of_cap_weighted_core():

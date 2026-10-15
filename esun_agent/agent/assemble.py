@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ..config import ROOT
+from ..config import ROOT, SCHEMA_VERSION
 from ..dplan_validate import Report, validate
 from ..strategy.declaration import allowed_bases, load_declaration
 from ..strategy.factors import factors_on
@@ -83,6 +83,14 @@ class DayContext:
     strategy: FinalStrategy = field(default_factory=FinalStrategy)
     fetched_at: datetime | None = None
     declaration: dict | None = None
+    datapack: object | None = None                   # esun_agent.datapack.DataPack（有下載時）：合規提示、應收配股
+
+    def weight_alert(self) -> tuple[bool, set[str]]:
+        """資料包最新結算日的 incidents 是否有單一個股權重提示 → (有無, 點名的持股代號)。"""
+        dp = self.datapack
+        if dp is None:
+            return False, set()
+        return dp.weight_incident_tickers(since=dp.as_of_date)
 
     @property
     def calendar(self) -> list[str]:
@@ -350,7 +358,7 @@ def build_doc(ctx: DayContext, ev, *, prop: Proposal | None, carried: dict[str, 
         inferences.append(inf)
 
     return {
-        "schema_version": "4.2", "doc_type": "D-Plan", "team_id": ctx.team_id, "trade_date": ctx.trade_date,
+        "schema_version": SCHEMA_VERSION, "doc_type": "D-Plan", "team_id": ctx.team_id, "trade_date": ctx.trade_date,
         "sources": sources, "observations": observations, "market_view": mv, "inferences": inferences,
         "decisions": decisions, "no_trade_decisions": no_trade,
         "orders": [o.to_dict() for o in plan.orders],

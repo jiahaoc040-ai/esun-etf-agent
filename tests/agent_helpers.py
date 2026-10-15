@@ -31,10 +31,18 @@ def find_obs(user: str, *, ticker=None, topic=None, carried=None) -> str:
     raise KeyError((ticker, topic))
 
 
+def _optional(user: str, topic: str) -> list[str]:
+    """美股等來源可能缺值（收集失敗）：有才引用。"""
+    try:
+        return [find_obs(user, topic=topic)]
+    except KeyError:
+        return []
+
+
 def mv(user: str, regime="neutral", stance="neutral") -> dict:
     return {"regime": regime, "stance": stance,
             "logic": "台股整體溫和、法人買賣超互見、美股半導體小幅回檔且夜盤小跌，訊號混雜，判定中性，維持核心部位。",
-            "basis_refs": [find_obs(user, topic="tw_market"), find_obs(user, topic="us_overnight")],
+            "basis_refs": [find_obs(user, topic="tw_market")] + _optional(user, "us_overnight"),
             "counter_evidence": "若美股半導體連跌兩日且夜盤續弱，將降為 risk_off", "confidence": 0.6}
 
 
@@ -137,14 +145,15 @@ class ConvSim(Sim):
         super().__init__(env, tmp_path, **kw)
         self.state_path = tmp_path / "state" / "conviction.json"
 
-    def day(self, trade_date: str, llm, extra_events=(), **kw):
+    def day(self, trade_date: str, llm, extra_events=(), datapack=None, **kw):
         from esun_agent.agent.conviction_agent import assemble_conviction_day, write_conviction_dplan
         from esun_agent.agent.conviction_state import ConvictionState
         panel = self.env["panel"]
         i = panel.dates.index(trade_date)
         ctx = DayContext(team_id=self.team, trade_date=trade_date, prev_date=panel.dates[i - 1], panel=panel,
                          factors=self.env["factors"], caps=self.env["caps"], top15=self.env["top15"], prev_nav=self.nav,
-                         cash=self.ledger.cash, holdings=dict(self.ledger.holdings), inputs=load_inputs(trade_date))
+                         cash=self.ledger.cash, holdings=dict(self.ledger.holdings), inputs=load_inputs(trade_date),
+                         datapack=datapack)
         if extra_events:
             ctx.inputs = {**ctx.inputs, "events": list(ctx.inputs.get("events", [])) + list(extra_events)}
         kw.setdefault("events", [])

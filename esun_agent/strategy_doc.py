@@ -1,10 +1,11 @@
-"""ETF 投資策略說明文件（docx）產生器。
+"""ETF 投資策略說明文件產生器：docx（保留，方便檢視修改版型）＋ PDF（主辦方後台只收 PDF）。
 
 版型沿用主辦方的「ETF 投資策略說明文件_參賽隊伍繳交格式_v1.docx」：第一頁三欄表單（ETF 名稱、投資主題、投資理念）
 由 config/strategy_declaration.json 填入（名稱 ≤20 字且開頭須為「主動」、主題 ≤50 字、理念 100～300 字，不符就不產檔）。
 表單之後是「補充說明」（form_only=True 時省略）：投組結構、候選池與 Agent 選股、換股紀律、代理回測摘要、降級保底、
 與每日 D-Plan 的對應。所有文字內容都來自宣告檔（v2：集中主題＋事件驅動）與 docs/conviction_backtest.json，
 不另寫一份；數字隨回測結果更新。
+PDF：有 LibreOffice（soffice）就用它把 docx 轉檔（版面最接近），否則用 reportlab 依 docx 內容排版（內建繁中字型）。
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
+from .agent.plan import MAX_DECISIONS
 from .config import ROOT
 from .strategy.declaration import load_declaration, validate_submission
 
@@ -184,7 +186,9 @@ def _sec_structure(doc, decl, S):
                          "不足時先把重疊的湊檔股換成不重疊者，再把重疊最大的高信心部位每次降 1.5%（最低 3%）；仍不足則退回 Agent 換股"],
         ["Active Share 硬規則", f"前日收盤 < {pct(r['ap_trigger'], 0, False)} → 當日強制再平衡到 ≥ {pct(r['ap_target'], 0, False)}；"
                                 f"前日收盤已 < 15% → 當日補到 ≥ {pct(r['ap_recovery_target'], 0, False)}，避免連續 2 日低於官方門檻"],
-        ["交易", f"每日依名單重算目標權重；既有持股差距 < {pct(r['band'], 1, False)}（無交易帶）不交易；單日異動超過 30 檔（schema 上限）時分兩天完成"],
+        ["交易", f"每日依名單重算目標權重；既有持股差距 < {pct(r['band'], 1, False)}（無交易帶）不交易；單日異動超過 {MAX_DECISIONS} 檔（schema 上限）時分兩天完成；"
+                 "BUY/ADD 的目標權重以前日收盤 ×1.10（漲停）壓力測試仍須 ≤ 10%（2330 ≤ 25%）；"
+                 "前日結算權重 > 9.5%（2330 > 24%）的被動超限部位當日強制減碼"],
     ], widths=[85, 380])
     mapping_box(doc, [
         "decisions：target_weight 由信心等級機械換算（高 8%／中 5.5%），湊檔股各 1–2%；委託一律由官方公式 derive_orders 推導，Agent 不決定權重或股數。",
@@ -324,3 +328,160 @@ def build_strategy_doc(out: Path | None = None, *, decl: dict | None = None, sum
     p.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(p))
     return p
+
+
+# ----------------------------------------------------------------------------- PDF（主辦方後台只收 PDF）
+
+PDF_PATH = OUTPUT_PATH.with_suffix(".pdf")
+SOFFICE_CANDIDATES = ("soffice", "libreoffice", "/Applications/LibreOffice.app/Contents/MacOS/soffice")
+CJK_FONT = "ESunCJK"
+# reportlab 只能內嵌 TrueType 外框字型（不支援 CFF 的 .otf）；依序嘗試，ESUN_PDF_FONT 可指定字型檔。
+# 不用 reportlab 內建的 CID 字型：它不內嵌，沒有亞洲語言包的檢視器會顯示空白。
+CJK_FONT_CANDIDATES = (
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/STHeiti Light.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc", "C:/Windows/Fonts/msjh.ttc",
+)
+
+
+def register_cjk_font() -> str:
+    """註冊可內嵌的中文字型，回傳字型檔路徑；找不到丟 DocError。"""
+    import os
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    if CJK_FONT in pdfmetrics.getRegisteredFontNames():
+        return getattr(pdfmetrics.getFont(CJK_FONT).face, "filename", "")
+    env = os.environ.get("ESUN_PDF_FONT")
+    tried = []
+    for path in ([env] if env else []) + list(CJK_FONT_CANDIDATES):
+        if not path or not Path(path).is_file():
+            continue
+        try:
+            font = TTFont(CJK_FONT, path, subfontIndex=0) if path.lower().endswith(".ttc") else TTFont(CJK_FONT, path)
+            if font.face.charToGlyph.get(ord("台")) is None:
+                tried.append(f"{path}（沒有中文字形）")
+                continue
+            pdfmetrics.registerFont(font)
+            return path
+        except Exception as e:  # noqa: BLE001 - CFF 外框等不支援的字型
+            tried.append(f"{path}（{type(e).__name__}）")
+    raise DocError("找不到可內嵌的中文 TrueType 字型，無法產生 PDF；請安裝 LibreOffice，或設定 ESUN_PDF_FONT=<.ttf/.ttc 路徑>"
+                   + (f"；試過：{'；'.join(tried)}" if tried else ""))
+
+
+def find_soffice() -> str | None:
+    import shutil
+    for c in SOFFICE_CANDIDATES:
+        p = shutil.which(c) or (c if Path(c).is_file() else None)
+        if p:
+            return p
+    return None
+
+
+def _pdf_soffice(src: Path, out: Path, soffice: str) -> Path:
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        r = subprocess.run([soffice, "--headless", "--convert-to", "pdf", "--outdir", td, str(src)],
+                           capture_output=True, text=True, timeout=180)
+        made = Path(td) / (src.stem + ".pdf")
+        if r.returncode != 0 or not made.exists():
+            raise DocError(f"LibreOffice 轉 PDF 失敗：{(r.stderr or r.stdout).strip()[:300]}")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(made.read_bytes())
+    return out
+
+
+def _blocks(d):
+    """docx 內文依序 → [("p", 段落) | ("t", 表格)]（含頁首段落）。"""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    out = [("p", p) for s in d.sections[:1] for p in s.header.paragraphs if p.text.strip()]
+    for el in d.element.body.iterchildren():
+        if el.tag == qn("w:p"):
+            out.append(("p", Paragraph(el, d)))
+        elif el.tag == qn("w:tbl"):
+            out.append(("t", Table(el, d)))
+    return out
+
+
+def _pdf_reportlab(src: Path, out: Path) -> Path:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except ImportError as e:
+        raise DocError("轉 PDF 需要 LibreOffice 或 reportlab（pip install reportlab）") from e
+    from xml.sax.saxutils import escape
+    register_cjk_font()
+    d = docx.Document(str(src))
+    blue = colors.HexColor("#1F4E79")
+    body = ParagraphStyle("body", fontName=CJK_FONT, fontSize=10, leading=15, wordWrap="CJK", spaceAfter=4)
+    h1 = ParagraphStyle("h1", parent=body, fontSize=14, leading=19, textColor=blue, spaceBefore=12, spaceAfter=5)
+    h2 = ParagraphStyle("h2", parent=body, fontSize=11.5, leading=16, textColor=blue, spaceBefore=7, spaceAfter=3)
+    cell = ParagraphStyle("cell", parent=body, fontSize=9, leading=13, spaceAfter=0)
+    width = A4[0] - 36 * mm
+
+    def style_of(p):
+        sizes = [r.font.size.pt for r in p.runs if r.font.size]
+        bold = p.runs and all(r.bold for r in p.runs if r.text.strip())
+        big = max(sizes, default=10)
+        return h1 if bold and big >= 14 else h2 if bold and big >= 11.5 else body
+
+    def para_text(p) -> str:
+        return escape(p.text).replace("\n", "<br/>")
+
+    story = []
+    for kind, b in _blocks(d):
+        if kind == "p":
+            if b.text.strip():
+                story.append(Paragraph(para_text(b), style_of(b)))
+            continue
+        rows = [[Paragraph("<br/>".join(para_text(p) for p in c.paragraphs if p.text.strip()) or " ", cell)
+                 for c in r.cells] for r in b.rows]
+        n = max(len(r) for r in rows)
+        rows = [r + [Paragraph(" ", cell)] * (n - len(r)) for r in rows]
+        ws = [c.width for c in b.rows[0].cells] if b.rows else []
+        if len(ws) == n and all(ws):
+            tot = sum(ws)
+            col_w = [width * w / tot for w in ws]
+        else:
+            col_w = [width / n] * n
+        t = Table(rows, colWidths=col_w, repeatRows=1 if len(rows) > 2 else 0)
+        t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#8EA9C1")),
+                               ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                               ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F6FA")),
+                               ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4)]))
+        story += [t, Spacer(1, 6)]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    SimpleDocTemplate(str(out), pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=18 * mm,
+                      bottomMargin=18 * mm, title="ETF 投資策略說明文件").build(story)
+    return out
+
+
+def docx_to_pdf(src: Path, out: Path | None = None, engine: str = "auto") -> Path:
+    """engine：auto（有 LibreOffice 用它，版面最接近 Word；否則 reportlab）、soffice、reportlab。"""
+    out = out or Path(src).with_suffix(".pdf")
+    if engine not in ("auto", "soffice", "reportlab"):
+        raise DocError(f"未知的 PDF 轉檔方式：{engine}")
+    so = find_soffice() if engine in ("auto", "soffice") else None
+    if engine == "soffice" and so is None:
+        raise DocError("找不到 LibreOffice（soffice）")
+    if so:
+        try:
+            return _pdf_soffice(Path(src), out, so)
+        except (DocError, OSError) as e:
+            if engine == "soffice":
+                raise
+            print(f"（LibreOffice 轉檔失敗，改用 reportlab：{e}）")
+    return _pdf_reportlab(Path(src), out)
+
+
+def build_strategy_pdf(out: Path | None = None, *, docx_out: Path | None = None, engine: str = "auto",
+                       **kw) -> tuple[Path, Path]:
+    """產生 docx（保留）＋同內容的 PDF（上傳用）。回傳 (docx, pdf)。"""
+    dx = build_strategy_doc(docx_out, **kw)
+    return dx, docx_to_pdf(dx, out or dx.with_suffix(".pdf"), engine)

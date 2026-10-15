@@ -260,3 +260,71 @@ def test_real_data_proxy_window_no_violations(env):
                                    env["panel"].dates[i + 23])
     assert r.violations["holdings"] == 0 and r.violations["cash"] == 0 and r.build_errors == 0
     assert (r.daily["ap_min"] >= ACTIVE_SHARE_MIN).all() and r.daily["n_hold"].between(23, 24).all()
+
+
+# ------------------------------------------------------------------ 合規保險
+def _bump(sim, D, t, w_target):
+    """把 t 的部位加到前日結算權重約 w_target（用現金買，NAV 不變）——模擬股價大漲造成的被動超限。"""
+    px = float(sim.env["panel"].close.loc[D][t])
+    add = int((w_target * sim.nav - sim.ledger.holdings.get(t, 0) * px) / px / 1000 + 1) * 1000
+    sim.ledger.holdings[t] = sim.ledger.holdings.get(t, 0) + add
+    sim.ledger.cash -= add * px
+
+
+def test_passive_overweight_forces_trim_with_reason(env, tmp_path):
+    sim = ConvSim(env, tmp_path)
+    sim.day(DAYS[0], FakeLLM([conviction_llm()]))
+    w = sim.weights(DAYS[0])
+    t = max((x for x in w if x != "2330"), key=lambda x: w[x])
+    _bump(sim, DAYS[0], t, 0.097)
+    assert 0.095 < sim.weights(DAYS[0])[t] < 0.10
+    r = sim.day(DAYS[1], FakeLLM([conviction_llm()]))
+    assert r.report.errors == []
+    d = next(d for d in r.doc["decisions"] if d["ticker"] == t)
+    assert d["action"] in ("TRIM", "SELL_ALL") and d["target_weight"] <= 0.08
+    infs = {i["inf_id"]: i for i in r.doc["inferences"]}
+    assert "被動超限，依規則於 5 日內調整" in infs[d["inference_refs"][0]]["logic"]
+    assert any(n.startswith("passive_trim:") for n in r.notes)
+
+
+def test_datapack_weight_incident_forces_trim_same_day(env, tmp_path):
+    from esun_agent.datapack import parse_datapack
+    sim = ConvSim(env, tmp_path)
+    sim.day(DAYS[0], FakeLLM([conviction_llm()]))
+    w = sim.weights(DAYS[0])
+    t = max((x for x in w if x != "2330"), key=lambda x: w[x])
+    assert w[t] < 0.095                                                    # 自己算還沒超過警戒線
+    dp = parse_datapack({"doc_type": "DataPack", "team_id": "TEAM_042", "trade_date": DAYS[1], "as_of_date": DAYS[0],
+                         "generated_at": f"{DAYS[0]}T18:58:00+08:00", "missing": [],
+                         "prev_day_orders": {"outcome": "executed", "void_reasons": [], "excluded_codes": []},
+                         "account": {"cash": sim.ledger.cash, "nav_tradable": sim.nav},
+                         "holdings": [{"code": x, "shares": n, "receivable_shares": 0, "close_price": None}
+                                      for x, n in sim.ledger.holdings.items()],
+                         "compliance": {"violations": 0, "notices": 1, "incidents": [
+                             {"date": DAYS[0], "check_code": "single_stock_weight", "status": "warn",
+                              "message": f"{t} 交易後個股權重異常（連續第 1 個交易日）"}]}})
+    r = sim.day(DAYS[1], FakeLLM([conviction_llm()]), datapack=dp)
+    assert r.report.errors == []
+    d = next(d for d in r.doc["decisions"] if d["ticker"] == t)
+    assert d["action"] in ("TRIM", "SELL_ALL") and d["target_weight"] < w[t]
+    logic = {i["inf_id"]: i["logic"] for i in r.doc["inferences"]}[d["inference_refs"][0]]
+    assert "被動超限" in logic and "資料包合規提示" in logic
+
+
+def test_buys_pass_limit_up_stress_and_buy_vs_add(env, tmp_path):
+    """每筆 BUY/ADD：委託後股數 × T-1 收盤 × 1.10 ÷ nav ≤ 10%（2330 ≤ 25%）；BUY 只用在前日結算股數為 0。"""
+    sim = ConvSim(env, tmp_path)
+    for T in DAYS[:3]:
+        before, nav = dict(sim.ledger.holdings), sim.nav
+        r = sim.day(T, FakeLLM([conviction_llm()]))
+        assert r.report.errors == []
+        D = env["panel"].dates[env["panel"].dates.index(T) - 1]
+        close = env["panel"].close.loc[D]
+        post = dict(before)
+        for o in r.doc["orders"]:
+            post[o["ticker"]] = post.get(o["ticker"], 0) + (o["shares"] if o["side"] == "BUY" else -o["shares"])
+        for d in r.doc["decisions"]:
+            if d["action"] in ("BUY", "ADD"):
+                t = d["ticker"]
+                assert (d["action"] == "BUY") == (before.get(t, 0) == 0)
+                assert post[t] * float(close[t]) * 1.10 / nav <= (0.25 if t == "2330" else 0.10)

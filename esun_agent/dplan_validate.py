@@ -1,17 +1,20 @@
 """D-Plan 提交前自我驗證（結構層 schema + 語意層 C 檢查的自製版本）。
 
-主辦方若釋出 verify_dplan.py，以官方為準；這裡的檢查依「撰寫指南 v4.2」與官方正/反例反推。
+主辦方若釋出 verify_dplan.py，以官方為準；這裡的檢查依 schema v4.3、「撰寫指南」§⑥ 與官方正/反例
+（docs/competition/v4.3/D-Plan_TEAM_042／043_2026-10-28.json）反推。
 嚴重度：
   ERROR = 主辦方會拒收或記警告 → 不得提交
   WARN  = 自訂安全緩衝或無法完整驗證 → 建議處理
 
 context（提交當天的帳務狀態，持股必須來自主辦方後台結算庫存）：
   {
-    "prev_nav": 1000000000,                 # 前日結算 NAV
-    "cash": 12345678,                       # 前日結算現金
-    "holdings": {"2330": 17000, ...},       # 前日結算持股（股數）
-    "prev_close": {"2330": 1480, ...}       # 交易所公布之前日收盤價（需涵蓋持股與決策標的）
+    "prev_nav": 1000000000,                 # 資料包 account.nav_tradable（不是 aum）
+    "cash": 12345678,                       # 資料包 account.cash
+    "holdings": {"2330": 17000, ...},       # 資料包 holdings[].shares（receivable_shares 不算）
+    "prev_close": {"2330": 1480, ...},      # 交易所公布之 T-1 收盤價（需涵蓋持股與決策標的）
+    "holdings_excerpt": false               # 選填：true＝持股只節錄幾檔（官方範例），檔數 20–30 降為 WARN
   }
+esun_agent.datapack.validate_ctx(dp, close) 可由資料包組出 context。
 """
 import json
 import re
@@ -19,8 +22,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .config import (CASH_BUFFER_HIGH, CASH_BUFFER_LOW, CASH_MAX, HOLD_TOLERANCE, MAX_HOLDINGS,
-                     MIN_HOLDINGS, SCHEMA_PATH, WEIGHT_BUFFER, max_weight)
+from .config import (CASH_BUFFER_HIGH, CASH_BUFFER_LOW, CASH_MAX, HOLD_TOLERANCE, LIMIT_UP, MAX_HOLDINGS,
+                     MIN_HOLDINGS, SCHEMA_PATH, WEIGHT_BUFFER, max_weight, passive_soft_limit)
 from .orders import derive_orders, estimate_flows
 from .universe import in_universe
 
@@ -214,7 +217,9 @@ def check_orders(doc: dict, ctx: dict, rep: Report):
         post[o["ticker"]] = post.get(o["ticker"], 0) + (o["shares"] if o["side"] == "BUY" else -o["shares"])
     post = {t: n for t, n in post.items() if n > 0}
     if not (MIN_HOLDINGS <= len(post) <= MAX_HOLDINGS):
-        rep.err("C11", f"委託後持股 {len(post)} 檔，不在 {MIN_HOLDINGS}–{MAX_HOLDINGS} 檔")
+        (rep.warn if ctx.get("holdings_excerpt") else rep.err)(
+            "C11", f"委託後持股 {len(post)} 檔，不在 {MIN_HOLDINGS}–{MAX_HOLDINGS} 檔"
+                   + ("（context 為節錄版持股）" if ctx.get("holdings_excerpt") else ""))
     if cash_after < 0:
         rep.err("C9", f"預估委託後現金為負 {cash_after:,.0f}")
     elif cash_pct > CASH_MAX:
@@ -223,6 +228,18 @@ def check_orders(doc: dict, ctx: dict, rep: Report):
     if no_px:
         rep.warn("CTX", f"缺少持股收盤價，無法檢查權重：{no_px}")
     traded = {o["ticker"]: o["side"] for o in actual}
+    adds = {d["ticker"] for d in decs if d["action"] in ("BUY", "ADD")}
+    for t in sorted(adds & set(post)):
+        if t in close:
+            w_up = post[t] * close[t] * (1 + LIMIT_UP) / nav
+            if w_up > max_weight(t) + 1e-12:
+                rep.err("C9", f"{t} 當日加碼後權重以 T-1 收盤 ×{1 + LIMIT_UP:.2f}（漲停）壓力測試 {w_up:.2%} > 上限 {max_weight(t):.0%}")
+    for t, n in holdings.items():
+        if n and t in close and n * close[t] / nav > passive_soft_limit(t):
+            w_post = post.get(t, 0) * close[t] / nav
+            if w_post > passive_soft_limit(t):
+                rep.warn("PASSIVE", f"{t} 前日權重 {n * close[t] / nav:.2%} 被動超限（> {passive_soft_limit(t):.1%}），"
+                                    f"委託後仍 {w_post:.2%}：須於 5 個交易日內調整")
     for t, n in post.items():
         if t in close:
             w = n * close[t] / nav

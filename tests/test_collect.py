@@ -255,6 +255,25 @@ def test_collect_us_source_order_headers_and_fallbacks(monkeypatch):
     assert d["quotes"]["SOX"]["chg_pct"] == pytest.approx((5238 / 5400 - 1) * 100, abs=1e-3)
 
 
+def test_us_nasdaq_assetclass_accept_and_fred_timeout_retries(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    routes = [("id=SP500", [ConnectionError("timeout"), ConnectionError("timeout"), fx("fred_SP500.csv")]),
+              ("id=NASDAQ100", ConnectionError("timeout")),
+              ("yahoo", 404), ("quote/SOX/historical", fx("nasdaq_SOX.json")), ("quote/TSM/historical", fx("nasdaq_SOX.json"))]
+    f = fetcher(routes)
+    d, warns = us.collect_us(f, not_after=date(2026, 10, 27))
+    calls, kws = f.session.calls, f.session.kw
+    nq = [(c, kw) for c, kw in zip(calls, kws) if "api.nasdaq.com" in c]
+    assert any("quote/SOX/historical" in c and "assetclass=index" in c for c, _ in nq)
+    assert any("quote/TSM/historical" in c and "assetclass=stocks" in c for c, _ in nq)
+    assert all(kw["headers"]["Accept"].startswith("application/json") for _, kw in nq)
+    fred = [kw for c, kw in zip(calls, kws) if "fred.stlouisfed.org" in c]
+    assert fred and all(kw["timeout"] == 60 for kw in fred)
+    assert sum("id=SP500" in c for c in calls) == 3 and "SPX" in d["quotes"]            # 失敗 2 次後第 3 次成功
+    assert sum("id=NASDAQ100" in c for c in calls) == 3                                 # 首次＋重試 2 次，之後改 Stooq
+    assert any("NDX" in w for w in warns)
+
+
 def test_collect_us_last_resort_stooq_and_total_failure(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda s: None)
     routes = [("id=", ConnectionError("x")), ("yahoo", ConnectionError("x")), ("nasdaq", fx("nasdaq_empty.json")),

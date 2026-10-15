@@ -26,17 +26,17 @@ class Fetcher:
 
     def get(self, url: str, params: dict | None = None, *, data: dict | None = None, name: str | None = None,
             headers: dict | None = None, retries: int | None = None, backoff: float = 2.0,
-            retry_status: tuple = (429, 500, 502, 503, 504)) -> bytes:
+            retry_status: tuple = (429, 500, 502, 503, 504), timeout: float | None = None) -> bytes:
         """GET（data 不為 None 時 POST）。成功時把原始內容存到 raw_dir/name（未給 name 則由 URL 推導）。
-        連線錯誤、讀取中斷（IncompleteRead／ChunkedEncodingError）與 retry_status 會以 backoff × 2^n 秒退避重試；
-        其他 HTTP 錯誤（404 等）直接失敗。"""
+        連線錯誤、讀取中斷（IncompleteRead／ChunkedEncodingError）、逾時與 retry_status 會以 backoff × 2^n 秒退避重試；
+        其他 HTTP 錯誤（404 等）直接失敗。timeout：本次呼叫的逾時秒數（預設用 Fetcher 的設定）。"""
         tries = self.retries if retries is None else retries
         last: Exception | None = None
         for attempt in range(tries):
             if self.sleep:
                 time.sleep(self.sleep)
             try:
-                kw = {"params": params, "timeout": self.timeout}
+                kw = {"params": params, "timeout": self.timeout if timeout is None else timeout}
                 if headers:
                     kw["headers"] = headers
                 r = (self.session.get(url, **kw) if data is None else self.session.post(url, data=data, **kw))

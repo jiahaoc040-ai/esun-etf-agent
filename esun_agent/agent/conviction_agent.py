@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..config import ACTIVE_SHARE_MIN, TSMC
+from ..config import ACTIVE_SHARE_MIN, SCHEMA_VERSION, TSMC
 from ..data.etf_holdings import check_target_weights
 from ..dplan_validate import Report, validate
 from ..strategy.candidates import CandidateParams, screen
@@ -35,7 +35,8 @@ from .conviction_state import ConvictionState, Pick
 from .llm import LLMError, PicksProposal, parse_picks
 from .observations import (BASIS_LABELS, EvidenceBuilder, blackout_observation, build_evidence,
                            candidate_observations, filler_observation, iso, now_taipei, position_observation, prune)
-from .plan import BUY_BUFFER, Plan, assign_funding, plan_orders, posture_for
+from .plan import (BUY_BUFFER, Plan, assign_funding, force_passive_trims, passive_overweight, plan_orders,
+                   posture_for)
 from .tilt_state import trading_days_elapsed
 
 MAX_ATTEMPTS = 3
@@ -103,6 +104,8 @@ class Prep:
     ap_target: float
     forced: bool
     notes: list[str] = field(default_factory=list)
+    passive: dict[str, float] = field(default_factory=dict)      # 被動超限、當日強制 TRIM 的持股 → 前日結算權重
+    passive_alert: bool = False                                  # 資料包合規提示已點出單一個股權重異常
 
 
 def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: CandidateParams,
@@ -132,8 +135,16 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
     ap_target = P.ap_recovery_target if cur_ap is not None and cur_ap < ACTIVE_SHARE_MIN else P.ap_target
     forced = cur_ap is not None and cur_ap < P.ap_trigger
     notes = (["ap_recovery"] if ap_target != P.ap_target else []) + (["ap_forced_rebalance"] if forced else [])
+    # 合規保險 (a)：被動超限（> 9.5%／2330 > 24%），或資料包合規提示點名的個股 → 當日強制 TRIM
+    passive = passive_overweight(cur_w)
+    alert, codes = ctx.weight_alert()
+    passive.update({t: cur_w[t] for t in codes if t in cur_w})
+    if alert and not codes:                                   # 提示沒寫代號：超過內部單檔上限者全部處理
+        passive.update({t: w for t, w in cur_w.items() if w > P.cap(t)})
+    if passive:
+        notes.append("passive_trim:" + ",".join(f"{t}={w:.2%}" for t, w in sorted(passive.items())))
     return Prep(D, T, close, nav, cash, holdings, cur_w, fdf, cap, elig, held_picks, held, stop, blk, cands, ev,
-                cand_obs, pos_obs, blk_obs, ap_target, forced, notes)
+                cand_obs, pos_obs, blk_obs, ap_target, forced, notes, passive, alert)
 
 
 # ----------------------------------------------------------------------------- prompt
@@ -321,6 +332,16 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
                         f"依 {D} 收盤價與前日淨值計算：持股 {len(cur)} 檔，本日調整 {len(decisions)} 檔、維持 {len(plan.no_trade)} 檔；"
                         f"調整檔的權重變動最大 {dev_values['max_traded_dev_pct']:.2f}%，目標現金 {dev_values['target_cash_pct']:.2f}%",
                         dev_values, as_of=f"{D}T13:30:00+08:00")
+    passive_obs = None
+    trims = {d["ticker"]: d for d in decisions if d["ticker"] in prep.passive and d["action"] in ("TRIM", "SELL_ALL")}
+    if trims:
+        pv = {f"{t}_weight_pct": round(prep.passive[t] * 100, 4) for t in sorted(trims)}
+        passive_obs = b.add_obs(mk_src[:5], "passive_overweight",
+                                f"依 {D} 收盤價與前日結算淨值（nav_tradable）計算："
+                                + "、".join(f"{t} {_name(t)} 權重 {prep.passive[t]:.2%}" for t in sorted(trims))
+                                + "，超過內部警戒線（個股 9.5%、2330 24%）"
+                                + ("；資料包合規狀態已出現單一個股權重提示" if prep.passive_alert else ""),
+                                pv, as_of=f"{D}T13:30:00+08:00")
     filler_obs = None
     if fillers:
         fw = sum(target.get(t, 0.0) for t in fillers) / len(fillers)
@@ -364,6 +385,15 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
                               f"{_name(t)} 收盤相對成本 {h.ret * 100:+.1f}%，跌幅超過停損線 {ConvictionParams().stop_loss:.0%}，"
                               "今日沒有新的正面事件可推翻，依換股紀律出場，避免單檔虧損擴大。",
                               f"{_name(t)} 觸發停損，出清")
+    passive_inf: dict[str, str] = {}
+    for t, d in sorted(trims.items()):
+        passive_inf[t] = add_inf([passive_obs] + ([prep.pos_obs[t]] if t in prep.pos_obs else []),
+                                 f"{_name(t)} 前日結算權重 {prep.passive[t]:.2%}（以 nav_tradable 與 {D} 交易所收盤價計），"
+                                 f"超過內部警戒線 {'24%' if t == TSMC else '9.5%'}（上限 {'25%' if t == TSMC else '10%'}），"
+                                 "被動超限，依規則於 5 日內調整：今日強制 TRIM 回到目標權重 "
+                                 f"{d['target_weight']:.2%}，不受無交易帶影響。"
+                                 + ("資料包合規提示已出現單一個股權重異常，當日必須處理。" if prep.passive_alert else ""),
+                                 f"{_name(t)} 被動超限，減碼至 {d['target_weight']:.2%}")
     fill_inf = None
     if filler_obs and any(t in touched for t in fillers):
         fill_inf = add_inf([filler_obs],
@@ -410,6 +440,8 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
             refs.append(fill_inf)
         if base_inf:
             refs.append(base_inf)
+        if t in passive_inf:
+            refs.insert(0, passive_inf[t])
         d["inference_refs"] = list(dict.fromkeys(refs + [rebalance_inf]))
         d["risk_check"] = (f"權重 {cur.get(t, 0.0):.2%} → {d['target_weight']:.2%}（上限 {'25%' if t == TSMC else '10%'}）；"
                            f"委託後持股 {n_post} 檔 ∈ [20,30]")[:300]
@@ -453,7 +485,7 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
             inf["confidence"] = i["confidence"]
         inferences.append(inf)
     return {
-        "schema_version": "4.2", "doc_type": "D-Plan", "team_id": ctx.team_id, "trade_date": ctx.trade_date,
+        "schema_version": SCHEMA_VERSION, "doc_type": "D-Plan", "team_id": ctx.team_id, "trade_date": ctx.trade_date,
         "sources": sources, "observations": observations, "market_view": mv, "inferences": inferences,
         "decisions": decisions, "no_trade_decisions": no_trade,
         "orders": [o.to_dict() for o in plan.orders],
@@ -489,8 +521,9 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
 
     def finish(mode, prop, levels, weights, fillers, stop_exits, base_note=""):
         target, bnotes = _targets(prep, weights, P, ctx.top15, mode)
+        target, trims = force_passive_trims(target, weights, prep.cur_w, set(prep.passive), P.cap)
         plan = plan_orders(target, prep.nav, prep.cash, prep.close, prep.holdings,
-                           buy_buffer=BUY_BUFFER if mode != "base" else 0.0)
+                           buy_buffer=BUY_BUFFER if mode != "base" else 0.0, protect=set(trims))
         kw = dict(mode=mode, prop=prop, levels=levels, target=target, fillers=fillers, plan=plan, usage=usage,
                   started=started, provider=provider, model=model, stop_exits=stop_exits, base_note=base_note)
         doc = build_doc(ctx, prep, completed=clock(), **kw)
