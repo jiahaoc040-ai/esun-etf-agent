@@ -1,11 +1,14 @@
 """FRED（聖路易聯準銀行）數列：正式 API 優先，沒有金鑰時退回 fredgraph.csv。
 
   正式 API  https://api.stlouisfed.org/fred/series/observations?series_id=…&api_key=…&file_type=json
-            金鑰讀環境變數 FRED_API_KEY（daily_run 會先讀 .env）。一律帶 realtime_start = realtime_end = vintage
-            （ALFRED：取「vintage 當天看得到的版本」），回測或補跑歷史日期時不會用到事後修正值。
+            金鑰讀環境變數 FRED_API_KEY（daily_run 會先讀 .env）。
+            即時抓取（daily_run 晚上／清晨）：不帶 realtime 參數，由 FRED 用它自己當天的版本。
+            回測／歷史研究明確傳入 vintage 時才帶 realtime_start = realtime_end = vintage（ALFRED：取「vintage 當天看得到的
+            版本」，避免事後修正值）；vintage 先夾到 FRED 的今天 min(vintage, 美國中部時間今天)——FRED 伺服器以
+            America/Chicago 日期為準，台北日期常比它快一天，realtime 落在 FRED 的「未來」會 HTTP 400。
   退回      https://fred.stlouisfed.org/graph/fredgraph.csv?id=…（只有最新版本，無法指定 vintage；會回傳警告）。
-  金鑰只放在 query 參數（params），不會出現在 source url、警告或 raw 檔名裡；source url 一律用數列頁
-  https://fred.stlouisfed.org/series/<id>。
+  金鑰只放在 query 參數（params），不會出現在 source url、raw 檔名裡；錯誤訊息中的 api_key 一律遮蔽成 ***。
+  HTTP 錯誤的警告包含狀態碼與 FRED 回傳的 error_message。source url 一律用數列頁 https://fred.stlouisfed.org/series/<id>。
 
 總經數列（macro）：DGS2 2 年期公債殖利率、DFF 聯邦基金有效利率、VIXCLS VIX、T10Y2Y 10Y−2Y 利差（皆為日資料）。
 不用 DTWEXBGS（美元指數，每週更新）。
@@ -16,10 +19,13 @@ import csv
 import io
 import json
 import os
-from datetime import date, timedelta
+import re
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from .http import BROWSER_HEADERS, Fetcher, decode
 
+FRED_TZ = ZoneInfo("America/Chicago")                  # FRED 伺服器（聖路易聯準銀行）的日期基準
 API_URL = "https://api.stlouisfed.org/fred/series/observations"
 CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={s}"
 SERIES_PAGE = "https://fred.stlouisfed.org/series/{s}"
@@ -78,20 +84,63 @@ def parse_api(payload: dict) -> list[tuple[str, float]]:
     return sorted(out)
 
 
+def fred_today(now: datetime | None = None) -> date:
+    """FRED 的「今天」：美國中部時間日期（台北 10/17 01:00 時仍是 10/16）。"""
+    return (now or datetime.now(FRED_TZ)).astimezone(FRED_TZ).date()
+
+
+def clamp_vintage(vintage: date, now: datetime | None = None) -> date:
+    return min(vintage, fred_today(now))
+
+
+def mask_key(text: str, key: str | None = None) -> str:
+    """遮蔽 api_key：query 參數 api_key=… 與金鑰字串本身都換成 ***。"""
+    out = re.sub(r"(api_key=)[^&\s'\"]+", r"\1***", str(text))
+    key = key or api_key()
+    return out.replace(key, "***") if key else out
+
+
+class FredError(RuntimeError):
+    pass
+
+
+def _error_detail(exc: Exception) -> str:
+    """從 Fetcher 的例外鏈找出 HTTP 狀態碼與 FRED 回傳的 error_message（JSON 或 XML）。"""
+    e: BaseException | None = exc
+    while e is not None:
+        resp = getattr(e, "response", None)
+        if resp is not None and getattr(resp, "status_code", None):
+            msg = ""
+            body = getattr(resp, "text", "") or ""
+            try:
+                msg = str(json.loads(body).get("error_message", ""))
+            except (ValueError, AttributeError):
+                m = re.search(r'error_message="([^"]*)"', body)
+                msg = m.group(1) if m else body.strip()[:200]
+            return f"HTTP {resp.status_code}" + (f"：{msg}" if msg else "")
+        e = e.__cause__
+    return f"{type(exc).__name__}: {exc}"
+
+
 def fetch(fetcher: Fetcher, series_id: str, *, end: date | None = None, vintage: date | None = None,
-          start: date | None = None) -> tuple[list[tuple[str, float]], str, str]:
-    """回傳 (序列, source url（數列頁）, 方式 "api"|"csv")。有 FRED_API_KEY 用正式 API（帶 realtime_start/end = vintage，
-    預設 vintage = end = 今天）；沒有金鑰用 fredgraph.csv。失敗丟例外（錯誤訊息不含金鑰）。"""
+          start: date | None = None, now: datetime | None = None) -> tuple[list[tuple[str, float]], str, str]:
+    """回傳 (序列, source url（數列頁）, 方式 "api"|"csv")。有 FRED_API_KEY 用正式 API；沒有金鑰用 fredgraph.csv。
+    vintage=None（即時）：不帶 realtime 參數；有 vintage（回測／歷史）：夾到 FRED 今天後帶 realtime_start/end。
+    失敗丟 FredError（含 HTTP 狀態碼與 FRED error_message，金鑰遮蔽）。"""
     key = api_key()
     if key:
-        end = end or date.today()
-        vintage = vintage or end
-        params = {"series_id": series_id, "api_key": key, "file_type": "json", "sort_order": "asc",
+        end = end or fred_today(now)
+        params = {"api_key": key, "file_type": "json", "sort_order": "asc",
                   "observation_start": (start or end - timedelta(days=LOOKBACK_DAYS)).isoformat(),
-                  "observation_end": end.isoformat(),
-                  "realtime_start": vintage.isoformat(), "realtime_end": vintage.isoformat()}
-        raw = fetcher.get(API_URL + f"?series_id={series_id}", params={k: v for k, v in params.items() if k != "series_id"},
-                          name=f"fred_api_{series_id}.json", timeout=TIMEOUT, retries=RETRIES)
+                  "observation_end": end.isoformat()}
+        if vintage is not None:
+            v = clamp_vintage(vintage, now).isoformat()
+            params.update(realtime_start=v, realtime_end=v)
+        try:
+            raw = fetcher.get(API_URL + f"?series_id={series_id}", params=params,
+                              name=f"fred_api_{series_id}.json", timeout=TIMEOUT, retries=RETRIES)
+        except Exception as e:  # noqa: BLE001 - 轉成不含金鑰的訊息
+            raise FredError(mask_key(f"FRED API {series_id} {_error_detail(e)}", key)) from None
         return parse_api(json.loads(decode(raw))), series_page(series_id), "api"
     url = CSV_URL.format(s=series_id)
     raw = fetcher.get(url, name=f"us_fred_{series_id}.csv", headers=BROWSER_HEADERS, timeout=TIMEOUT, retries=RETRIES)
@@ -105,18 +154,20 @@ def last_two(series: list[tuple[str, float]], not_after: date | None = None) -> 
     return s[-2], s[-1]
 
 
-def collect_macro(fetcher: Fetcher, not_after: date | None = None, vintage: date | None = None) -> tuple[dict | None, list[str]]:
+def collect_macro(fetcher: Fetcher, not_after: date | None = None, vintage: date | None = None,
+                  now: datetime | None = None) -> tuple[dict | None, list[str]]:
     """回傳 (macro_input 或 None, warnings)。
     macro_input = {"series": {id: {"name", "unit", "date", "value", "prev_date", "prev_value", "chg", "chg_unit", "url"}},
                    "mode": "api"|"csv"}。date 是觀測值的實際日期（不是今天）。
-    vintage（ALFRED 版本日）預設 = not_after；只有正式 API 支援，退回 CSV 時會警告。"""
+    vintage（ALFRED 版本日）：每日即時抓取不傳（不帶 realtime 參數）；回測／歷史研究才傳，會夾到 FRED 的今天。
+    只有正式 API 支援 vintage，退回 CSV 時會警告。"""
     out, warns, modes = {}, [], set()
     for sid, (name, unit, chg_unit, mult) in MACRO_SERIES.items():
         try:
-            series, url, mode = fetch(fetcher, sid, end=not_after, vintage=vintage or not_after)
+            series, url, mode = fetch(fetcher, sid, end=not_after, vintage=vintage, now=now)
             (d0, v0), (d1, v1) = last_two(series, not_after)
         except Exception as e:  # noqa: BLE001 - 單一數列失敗只缺值
-            warns.append(f"FRED {sid} 失敗（{str(e).splitlines()[0][:80]}），缺值")
+            warns.append(f"FRED {sid} 失敗（{mask_key(str(e).splitlines()[0])[:200]}），缺值")
             continue
         modes.add(mode)
         out[sid] = {"name": name, "unit": unit, "date": d1, "value": v1, "prev_date": d0, "prev_value": v0,
@@ -124,5 +175,5 @@ def collect_macro(fetcher: Fetcher, not_after: date | None = None, vintage: date
     if not out:
         return None, warns + ["FRED 總經數列全部失敗，今日不使用 macro 資料"]
     if "csv" in modes:
-        warns.append("未設定 FRED_API_KEY：改用 fredgraph.csv（無法指定 ALFRED 版本，歷史日期可能含事後修正值）")
+        warns.append("未設定 FRED_API_KEY：改用 fredgraph.csv" + ("（無法指定 ALFRED 版本，歷史日期可能含事後修正值）" if vintage else ""))
     return {"series": out, "mode": "api" if modes == {"api"} else "csv"}, warns

@@ -1,8 +1,9 @@
 """v2.3.0：FRED 正式 API（ALFRED 版本）、總經 observation、美國重大事件（前 1 日／當日）、宣告因子。"""
 import copy
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -36,7 +37,7 @@ def api_routes():
 
 
 # ------------------------------------------------------------------ FRED
-def test_fred_api_uses_key_and_alfred_vintage_without_leaking_key(monkeypatch):
+def test_fred_api_live_mode_without_realtime_and_no_key_leak(monkeypatch):
     monkeypatch.setenv("FRED_API_KEY", KEY)
     f = fetcher(api_routes())
     m, warns = fred.collect_macro(f, not_after=date(2026, 10, 23))
@@ -50,19 +51,67 @@ def test_fred_api_uses_key_and_alfred_vintage_without_leaking_key(monkeypatch):
     assert all(c.startswith(fred.API_URL) for c in calls) and not any(KEY in c for c in calls)
     for kw in kws:
         p = kw["params"]
-        assert p["api_key"] == KEY and p["file_type"] == "json"
-        assert p["realtime_start"] == p["realtime_end"] == "2026-10-23"                       # ALFRED：當時版本
-        assert p["observation_end"] == "2026-10-23"
+        assert p["api_key"] == KEY and p["file_type"] == "json" and p["observation_end"] == "2026-10-23"
+        assert "realtime_start" not in p and "realtime_end" not in p                       # 即時：用 FRED 當天版本
     assert KEY not in json.dumps(m)
     assert "DTWEXBGS" not in fred.MACRO_SERIES
 
 
-def test_fred_vintage_for_history_and_failure_warning_has_no_key(monkeypatch):
+def test_fred_taipei_after_midnight_chicago_still_previous_day(monkeypatch):
+    """台北 10/17 01:00 = 芝加哥 10/16 11:00：即時模式不帶 realtime；回測模式 vintage 10/17 夾到 10/16。"""
+    monkeypatch.setenv("FRED_API_KEY", KEY)
+    now = datetime(2026, 10, 17, 1, 0, tzinfo=ZoneInfo("Asia/Taipei"))
+    assert fred.fred_today(now) == date(2026, 10, 16)
+    f = fetcher(api_routes())
+    fred.collect_macro(f, not_after=now.date(), now=now)
+    assert f.session.kw and all("realtime_start" not in kw["params"] and "realtime_end" not in kw["params"]
+                                for kw in f.session.kw)
+    f = fetcher(api_routes())
+    fred.collect_macro(f, not_after=now.date(), vintage=date(2026, 10, 17), now=now)
+    assert all(kw["params"]["realtime_start"] == kw["params"]["realtime_end"] == "2026-10-16" for kw in f.session.kw)
+    f = fetcher(api_routes())
+    fred.fetch(f, "DGS2", end=date(2025, 3, 3), vintage=date(2025, 3, 3), now=now)          # 歷史 vintage 不受影響
+    assert f.session.kw[0]["params"]["realtime_start"] == "2025-03-03"
+
+
+class HttpErrorSession:
+    """模擬 requests：raise_for_status 的 HTTPError 帶 response，訊息含完整網址（含 api_key）。"""
+    def __init__(self, status, body):
+        self.status, self.body, self.headers, self.calls = status, body, {}, []
+
+    def get(self, url, params=None, **kw):
+        import requests
+        self.calls.append(url)
+        full = url + "&" + "&".join(f"{k}={v}" for k, v in (params or {}).items())
+        sess = self
+
+        class R:
+            status_code, content, text = sess.status, sess.body.encode(), sess.body
+
+            def raise_for_status(self):
+                raise requests.HTTPError(f"{sess.status} Client Error: Bad Request for url: {full}", response=self)
+        return R()
+
+
+def test_fred_http_error_warning_has_status_and_message_and_masks_key(monkeypatch):
+    from esun_agent.collect.http import Fetcher
+    monkeypatch.setenv("FRED_API_KEY", KEY)
+    body = json.dumps({"error_code": 400, "error_message": "Bad Request.  The value for variable realtime_start is in the future."})
+    m, warns = fred.collect_macro(Fetcher(session=HttpErrorSession(400, body), retries=1), not_after=date(2026, 10, 17),
+                                  vintage=date(2026, 10, 17))
+    assert m is None
+    w = next(x for x in warns if "DGS2" in x)
+    assert "HTTP 400" in w and "realtime_start is in the future" in w and KEY not in " ".join(warns)
+    xml = '<?xml version="1.0"?><error code="400" message="x" error_message="Bad Request.  api_key=abc is not registered."/>'
+    _, warns = fred.collect_macro(Fetcher(session=HttpErrorSession(400, xml), retries=1), not_after=date(2026, 10, 17))
+    assert any("HTTP 400" in x and "api_key=***" in x for x in warns) and not any("abc" in x or KEY in x for x in warns)
+    assert fred.mask_key(f"https://x?series_id=DGS2&api_key={KEY}&file_type=json", KEY) == \
+        "https://x?series_id=DGS2&api_key=***&file_type=json"
+
+
+def test_fred_failure_warning_has_no_key(monkeypatch):
     monkeypatch.setenv("FRED_API_KEY", KEY)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    f = fetcher(api_routes())
-    fred.fetch(f, "DGS2", end=date(2025, 3, 3), vintage=date(2025, 3, 3))
-    assert f.session.kw[0]["params"]["realtime_start"] == "2025-03-03"
     m, warns = fred.collect_macro(fetcher([("series_id=DGS2", ConnectionError("down"))]), not_after=date(2026, 10, 23))
     assert m is None and any("FRED DGS2 失敗" in w for w in warns) and not any(KEY in w for w in warns)
 
@@ -169,4 +218,4 @@ def test_prompt_and_env_example_updated():
     user_md = (ROOT / "prompts" / "conviction_user.md").read_text(encoding="utf-8")
     assert "{{us_events}}" in user_md and "{{macro_risk}}" in user_md
     env = (ROOT / ".env.example").read_text(encoding="utf-8")
-    assert any(line.startswith("FRED_API_KEY=") and len(line) > len("FRED_API_KEY=") for line in env.splitlines())
+    assert any(line.startswith("FRED_API_KEY=") for line in env.splitlines())          # 金鑰不 commit，由 .env 填
