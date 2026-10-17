@@ -226,9 +226,11 @@ def taifex_observation(b: EvidenceBuilder, d: dict) -> str:
 
 
 def us_observation(b: EvidenceBuilder, d: dict) -> str:
-    """d["sources"]（選填，最多 5 個 {url, name, archive_url}）：每個代號一個來源；沒有時用 d["url"]。"""
+    """d["sources"]（選填，最多 5 個 {url, name, content_as_of?, archive_url?}）：每個代號一個來源（content_as_of 為該代號
+    收盤日；缺時用 d["content_as_of"]）；沒有 sources 時用 d["url"]。"""
     srcs = d.get("sources") or [{"url": d["url"], "name": d.get("name") or "美股／ADR 收盤行情"}]
-    sids = [b.add_source("vendor", s["url"], d["content_as_of"], name=s.get("name"), archive_url=s.get("archive_url"))
+    sids = [b.add_source("vendor", s["url"], s.get("content_as_of") or d["content_as_of"], name=s.get("name"),
+                         archive_url=s.get("archive_url"))
             for s in srcs[:5]]
     parts, values = [], {}
     for name, q in d["quotes"].items():

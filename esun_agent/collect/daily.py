@@ -29,6 +29,7 @@ class CollectResult:
     inputs: dict = field(default_factory=dict)            # {"taifex", "us", "macro", "events"} → DayContext.inputs
     revenue_events: dict[str, dict] = field(default_factory=dict)   # ticker → 月營收事件（daily_run 依焦點名單篩選）
     warnings: list[str] = field(default_factory=list)
+    info: list[str] = field(default_factory=list)          # 不算警告的提示（例如 FRED 的 NDX 晚一天）
     done: list[str] = field(default_factory=list)
     market_ok: bool = False
     market_not_ready: bool = False                        # 最新行情不是 D（當天尚未公布）
@@ -138,6 +139,7 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
         us, warns = collect_us(f, not_after=now.date(), do_archive=do_archive)
         res.warnings.extend(warns)
         if us:
+            res.info.extend(us.get("info", []))
             res.inputs["us"] = us
 
     def do_macro():

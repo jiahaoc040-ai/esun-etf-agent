@@ -226,64 +226,112 @@ def test_parse_us_sources():
     assert n[0][0] == "2026-10-22" and n[-1] == ("2026-10-26", 5238.0)                            # 由舊到新
     with pytest.raises(ValueError, match="Nasdaq"):
         us.parse_nasdaq(json.loads(fx("nasdaq_empty.json")))
-    st = us.parse_stooq(fx("stooq_sox.csv").decode())
-    assert us.last_change(st, date(2026, 10, 25))["date"] == "2026-10-23"
-    with pytest.raises(ValueError):
-        us.parse_stooq("No data")
     y = us.parse_yahoo(json.loads(fx("yahoo_tsm.json")))
     assert len(y) == 2 and us.last_change(y)["close"] == 306.0                                    # None 收盤略過
     assert us.close_time_taipei("2026-10-26") == "2026-10-27T04:00:00+08:00"   # 夏令（美國 11/1 才結束夏令時間）
     assert us.close_time_taipei("2026-11-02") == "2026-11-03T05:00:00+08:00"   # 冬令
 
 
-def test_collect_us_source_order_headers_and_fallbacks(monkeypatch):
+REAL = "real/"
+
+
+def fred_csv(sid, *rows):
+    return (f"observation_date,{sid}\n" + "".join(f"{d},{v}\n" for d, v in rows)).encode()
+
+
+def test_parse_real_nasdaq_and_cnbc():
+    sox = us.parse_nasdaq(json.loads(fx(REAL + "nasdaq_SOX_20261016.json")))
+    assert sox[-2:] == [("2026-10-15", 11581.22), ("2026-10-16", 11137.29)] and sox[0][0] == "2026-10-05"   # 千分位逗號
+    tsm = us.parse_nasdaq(json.loads(fx(REAL + "nasdaq_TSM_20261016.json")))
+    assert tsm[-2:] == [("2026-10-15", 422.25), ("2026-10-16", 412.61)]                                     # $ 符號
+    c = us.last_change(tsm)
+    assert c["date"] == "2026-10-16" and c["chg_pct"] == pytest.approx((412.61 / 422.25 - 1) * 100)
+    with pytest.raises(ValueError, match="rCode 400"):
+        us.parse_nasdaq({"data": None, "message": None, "status": {"rCode": 400, "bCodeMessage": [{"code": 1001, "errorMessage": "Invalid"}]}})
+    q = us.parse_cnbc(json.loads(fx(REAL + "cnbc_SOX_TSM_20261016.json")))
+    assert q[".SOX"] == {"date": "2026-10-16", "close": 11137.287, "chg_pct": -3.83}
+    assert q["TSM"]["close"] == 412.61 and q["TSM"]["chg_pct"] == -2.28 and q["TSM"]["date"] == "2026-10-16"
+    no_pct = {"FormattedQuoteResult": {"FormattedQuote": [{"symbol": "TSM", "last": "412.61", "last_time": "2026-10-16T16:00:00.000-0400",
+                                                           "previous_day_closing": "422.25"}]}}
+    assert us.parse_cnbc(no_pct)["TSM"]["chg_pct"] == pytest.approx((412.61 / 422.25 - 1) * 100)
+    with pytest.raises(ValueError, match="CNBC"):
+        us.parse_cnbc({"FormattedQuoteResult": {"FormattedQuote": []}})
+
+
+def test_collect_us_nasdaq_first_with_required_params_headers_and_page_urls(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda s: None)
-    routes = [("id=SP500", fx("fred_SP500.csv")), ("id=NASDAQ100", fx("fred_NASDAQ100_olddate.csv")),
-              ("chart/%5ESOX", [429, 429, 429]),                                   # Yahoo 一直 429 → 改 Nasdaq
-              ("quote/SOX/historical", fx("nasdaq_SOX.json")),
-              ("chart/TSM", [429, fx("yahoo_tsm.json")])]                         # 429 一次後成功
+    routes = [("id=SP500", fred_csv("SP500", ("2026-10-15", 6600), ("2026-10-16", 6534))),
+              ("id=NASDAQ100", fred_csv("NASDAQ100", ("2026-10-14", 24000), ("2026-10-15", 24100))),   # FRED 晚一天
+              ("quote/SOX/historical", fx(REAL + "nasdaq_SOX_20261016.json")),
+              ("quote/TSM/historical", fx(REAL + "nasdaq_TSM_20261016.json"))]
+    f = fetcher(routes)
+    d, warns = us.collect_us(f, not_after=date(2026, 10, 17))
+    assert warns == [] and set(d["quotes"]) == {"SOX", "NDX", "SPX", "TSM"}
+    assert d["info"] and "NDX" in d["info"][0] and "晚一天" in d["info"][0]                    # 只記 info，不算警告
+    calls, kws = f.session.calls, f.session.kw
+    assert not any(h in c for c in calls for h in ("cnbc", "yahoo", "stooq"))
+    nq = [(c, kw) for c, kw in zip(calls, kws) if "api.nasdaq.com" in c]
+    assert any("quote/SOX/historical?assetclass=index&fromdate=2026-10-03&todate=2026-10-17&limit=10" in c for c, _ in nq)
+    assert any("quote/TSM/historical?assetclass=stocks&fromdate=2026-10-03&todate=2026-10-17" in c for c, _ in nq)
+    for _, kw in nq:
+        h = kw["headers"]
+        assert h["Accept"] == "application/json, text/plain, */*" and "Mozilla/5.0" in h["User-Agent"]
+        assert h["Origin"] == "https://www.nasdaq.com" and h["Referer"] == "https://www.nasdaq.com/"
+    srcs = {s["name"].split()[0]: s for s in d["sources"]}
+    assert srcs["SOX"]["url"] == "https://www.nasdaq.com/market-activity/index/sox/historical"
+    assert srcs["TSM"]["url"] == "https://www.nasdaq.com/market-activity/stocks/tsm/historical"
+    assert not any("api." in s["url"] or "quote.cnbc.com" in s["url"] for s in d["sources"])
+    assert srcs["SOX"]["content_as_of"] == "2026-10-17T04:00:00+08:00"                         # 美東 10/16 16:00
+    assert srcs["NDX"]["content_as_of"] == "2026-10-16T04:00:00+08:00"                         # 該筆自己的收盤日
+    assert d["content_as_of"] == "2026-10-17T04:00:00+08:00"
+    assert d["quotes"]["SOX"]["chg_pct"] == pytest.approx((11137.29 / 11581.22 - 1) * 100, abs=1e-3)
+
+
+def test_collect_us_falls_back_to_cnbc_then_yahoo(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    bad = json.dumps({"data": None, "message": None, "status": {"rCode": 400, "bCodeMessage": None}}).encode()
+    routes = [("id=", fred_csv("X", ("2026-10-15", 1), ("2026-10-16", 2))),
+              ("api.nasdaq.com", bad), ("quote.cnbc.com", fx(REAL + "cnbc_SOX_TSM_20261016.json"))]
+    f = fetcher(routes)
+    d, warns = us.collect_us(f, not_after=date(2026, 10, 17))
+    assert warns == [] and d["quotes"]["SOX"]["chg_pct"] == -3.83 and d["quotes"]["TSM"]["close"] == 412.61
+    assert sum("quote.cnbc.com" in c for c in f.session.calls) == 1                             # 一次查兩個代號
+    assert any(".SOX%7CTSM" in c for c in f.session.calls)
+    srcs = {s["name"].split()[0]: s["url"] for s in d["sources"]}
+    assert srcs["SOX"] == "https://www.cnbc.com/quotes/.SOX" and srcs["TSM"] == "https://www.cnbc.com/quotes/TSM"
+    routes = [("id=", fred_csv("X", ("2026-10-15", 1), ("2026-10-16", 2))), ("api.nasdaq.com", bad),
+              ("quote.cnbc.com", ConnectionError("x")), ("chart/TSM", [429, fx("yahoo_tsm.json")])]
     f = fetcher(routes)
     d, warns = us.collect_us(f, not_after=date(2026, 10, 27))
-    assert set(d["quotes"]) == {"SOX", "NDX", "SPX", "TSM"} and warns == [] or all("不一致" in w for w in warns)
-    srcs = {s["name"].split()[0]: s["url"] for s in d["sources"]}
-    assert "fred" in srcs["SPX"] and "fred" in srcs["NDX"] and "nasdaq.com" in srcs["SOX"] and "yahoo" in srcs["TSM"]
-    calls = f.session.calls
-    assert sum("chart/%5ESOX" in c for c in calls) == 3                                 # 首次＋429 退避重試 2 次
-    assert not any("stooq" in c for c in calls)                                          # Stooq 只在最後才用
-    ua = [kw.get("headers", {}).get("User-Agent", "") for c, kw in zip(calls, f.session.kw) if "yahoo" in c or "nasdaq" in c]
-    assert ua and all("Mozilla/5.0" in u and "Chrome" in u for u in ua)
-    assert d["quotes"]["SOX"]["chg_pct"] == pytest.approx((5238 / 5400 - 1) * 100, abs=1e-3)
+    assert "TSM" in d["quotes"] and "SOX" not in d["quotes"]
+    assert any(w.startswith("SOX 全部來源失敗") and "Nasdaq" in w and "CNBC" in w and "Yahoo" in w for w in warns)
+    assert sum("chart/TSM" in c for c in f.session.calls) == 2                                  # 429 退避後成功
+    assert {s["name"].split()[0]: s["url"] for s in d["sources"]}["TSM"] == "https://finance.yahoo.com/quote/TSM/history/"
+    assert not any("stooq" in c for c in f.session.calls)
 
 
-def test_us_nasdaq_assetclass_accept_and_fred_timeout_retries(monkeypatch):
+def test_us_fred_timeout_retries_and_total_failure(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda s: None)
     routes = [("id=SP500", [ConnectionError("timeout"), ConnectionError("timeout"), fx("fred_SP500.csv")]),
-              ("id=NASDAQ100", ConnectionError("timeout")),
-              ("yahoo", 404), ("quote/SOX/historical", fx("nasdaq_SOX.json")), ("quote/TSM/historical", fx("nasdaq_SOX.json"))]
+              ("id=NASDAQ100", ConnectionError("timeout")), ("quote/SOX/historical", fx("nasdaq_SOX.json"))]
     f = fetcher(routes)
     d, warns = us.collect_us(f, not_after=date(2026, 10, 27))
     calls, kws = f.session.calls, f.session.kw
-    nq = [(c, kw) for c, kw in zip(calls, kws) if "api.nasdaq.com" in c]
-    assert any("quote/SOX/historical" in c and "assetclass=index" in c for c, _ in nq)
-    assert any("quote/TSM/historical" in c and "assetclass=stocks" in c for c, _ in nq)
-    assert all(kw["headers"]["Accept"].startswith("application/json") for _, kw in nq)
-    fred = [kw for c, kw in zip(calls, kws) if "fred.stlouisfed.org" in c]
-    assert fred and all(kw["timeout"] == 60 for kw in fred)
+    fredc = [kw for c, kw in zip(calls, kws) if "fred.stlouisfed.org" in c]
+    assert fredc and all(kw["timeout"] == 60 for kw in fredc)
     assert sum("id=SP500" in c for c in calls) == 3 and "SPX" in d["quotes"]            # 失敗 2 次後第 3 次成功
-    assert sum("id=NASDAQ100" in c for c in calls) == 3                                 # 首次＋重試 2 次，之後改 Stooq
-    assert any("NDX" in w for w in warns)
-
-
-def test_collect_us_last_resort_stooq_and_total_failure(monkeypatch):
-    monkeypatch.setattr("time.sleep", lambda s: None)
-    routes = [("id=", ConnectionError("x")), ("yahoo", ConnectionError("x")), ("nasdaq", fx("nasdaq_empty.json")),
-              ("s=^sox", fx("stooq_sox.csv")), ("s=^spx", fx("stooq_nodata.csv"))]
-    d, warns = us.collect_us(fetcher(routes), not_after=date(2026, 10, 27))
-    assert set(d["quotes"]) == {"SOX"} and "stooq" in d["sources"][0]["url"]
-    assert any(w.startswith("SPX 全部來源失敗") for w in warns) and any(w.startswith("TSM 全部來源失敗") for w in warns)
-    assert all("\n" not in w for w in warns)
+    assert sum("id=NASDAQ100" in c for c in calls) == 3                                 # 首次＋重試 2 次
+    assert any(w.startswith("NDX 全部來源失敗") for w in warns) and all("\n" not in w for w in warns)
     none, warns = us.collect_us(fetcher([]))
     assert none is None and any("全部抓取失敗" in w for w in warns)
+
+
+def test_us_date_mismatch_other_than_fred_lag_is_warning():
+    routes = [("id=", fred_csv("X", ("2026-10-12", 1), ("2026-10-13", 2))),                      # 晚三天：不是 FRED 慣常延遲
+              ("quote/SOX/historical", fx(REAL + "nasdaq_SOX_20261016.json")),
+              ("quote/TSM/historical", fx(REAL + "nasdaq_TSM_20261016.json"))]
+    d, warns = us.collect_us(fetcher(routes), not_after=date(2026, 10, 17))
+    assert d["info"] == [] and any("日期不一致" in w and "NDX" in w for w in warns)
 
 
 def test_us_and_taifex_inputs_become_observations():

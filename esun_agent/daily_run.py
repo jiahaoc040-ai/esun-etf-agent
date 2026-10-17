@@ -473,6 +473,8 @@ def _evening(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, tea
     col: CollectResult = collector(D, raw / "collect", now=now, do_archive=do_archive)
     warnings.extend(col.warnings)
     log(f"  完成：{', '.join(col.done) or '（無）'}；警告 {len(col.warnings)} 則")
+    for m in getattr(col, "info", []):
+        log(f"  info：{m}")
     if not col.market_ok and not (paths.market / f"{Ds}.parquet").exists():
         if col.market_not_ready:
             msg = (f"{Ds} 的收盤行情尚未公布（交易所最新資料仍是前一交易日）——不產生 D-Plan；請稍後重跑"
@@ -518,6 +520,8 @@ def _morning(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, tea
         return _evening(now, Ts, Ds, paths, raw, collector, llm_factory, log, warnings, team, do_archive)
     col = collector(D, raw / "collect_morning", steps=("taifex", "us", "macro"), now=now, do_archive=do_archive)
     warnings.extend(col.warnings)
+    for m in getattr(col, "info", []):
+        log(f"  info：{m}")
     inputs = json.loads(prev_inputs.read_text(encoding="utf-8"))
     moves = []
     us_new, tx_new = col.inputs.get("us"), col.inputs.get("taifex")
