@@ -238,5 +238,214 @@
   }
  ],
  "stock_events_note": "個股事件（法人說明會等）：由 scripts/fetch_conferences.py 從公開資訊觀測站 t100sb02_1 抓 150 檔 2026-10-20～2026-11-30 的法說會寫入（雲端連不到 MOPS，尚待 SS 在 Mac 執行）。法說前 1 個交易日不新建倉。",
- "stock_events": []
+ "stock_events": [
+  {
+   "date": "2026-10-20",
+   "kind": "broker_meeting",
+   "ticker": "2317",
+   "name": "2317 鴻海 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "115年10月20日受凱基證券邀請參加投資人會議，說明本公司營運概況。"
+  },
+  {
+   "date": "2026-10-23",
+   "kind": "investor_conference",
+   "ticker": "3105",
+   "name": "3105 穩懋 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司將舉辦2026年第三季線上法人說明會，說明本公司營運狀況。 14:00於網路直播，請連結至以下網址https://www.zucast.com/webcast/63B76BX6 建議參與者於法說會前安裝或升級所需播放軟體，或至 http://www.zucast.com/help尋求技術支援。"
+  },
+  {
+   "date": "2026-10-27",
+   "kind": "investor_conference",
+   "ticker": "2337",
+   "name": "2337 旺宏 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "旺宏電子2026年第三季營運成果報告"
+  },
+  {
+   "date": "2026-10-27",
+   "kind": "investor_conference",
+   "ticker": "6239",
+   "name": "6239 力成 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "報告115年第三季營運成果及未來之營運展望"
+  },
+  {
+   "date": "2026-10-28",
+   "kind": "investor_conference",
+   "ticker": "2303",
+   "name": "2303 聯電 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司2026年第三季財務暨營運報告。"
+  },
+  {
+   "date": "2026-10-28",
+   "kind": "investor_conference",
+   "ticker": "3718",
+   "name": "3718 中光電投控 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "說明本公司115年第三季財務及營運報告"
+  },
+  {
+   "date": "2026-10-28",
+   "kind": "broker_meeting",
+   "ticker": "4966",
+   "name": "4966 譜瑞-KY 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "譜瑞科技股份有限公司(股票代號: 4966) 西元2026年第三季線上法人 說明會將於西元2026年10月28日下午2點(台北時間)舉行，有關會議大綱如下: -公佈公司西元2026年第三季營運成果與西元2026年第四季營運展望 -問與答 有意參加者可透過網路連結參加線上法人說明會。欲提問之分析師或媒體請撥打下列 電話號碼參加會議。 電話法人說明會撥打號碼: 台灣: 02-3396-1191 香港:"
+  },
+  {
+   "date": "2026-10-28",
+   "kind": "broker_meeting",
+   "ticker": "6510",
+   "name": "6510 精測 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "中華精測科技股份有限公司(代號:6510)擬於2026年10月28日舉行第三季線上法說會，報告本公司營運成果。欲參加者可透過網路連接下列網址參加線上法說會。 https://www.zucast.com/webcast/lEl6ff3h"
+  },
+  {
+   "date": "2026-10-29",
+   "kind": "investor_conference",
+   "ticker": "2308",
+   "name": "2308 台達電 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司自辦法人說明會，說明115年第3季財務報告相關資訊"
+  },
+  {
+   "date": "2026-10-29",
+   "kind": "investor_conference",
+   "ticker": "2379",
+   "name": "2379 瑞昱 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "瑞昱半導體將於115年10月29日(四)舉行2026年第3季線上法人說明會。 時間：4:00-5:00 pm 語言: 英文 直播網址：https://www.zucast.com/webcast/AeaFcpKL建議參與者於法說會前安裝或升級所需播放軟體，或至http://www.zucast.com/help 尋求技術支援。"
+  },
+  {
+   "date": "2026-10-29",
+   "kind": "investor_conference",
+   "ticker": "2409",
+   "name": "2409 友達 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "115年第三季線上法人說明會"
+  },
+  {
+   "date": "2026-10-29",
+   "kind": "broker_meeting",
+   "ticker": "3529",
+   "name": "3529 力旺 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加櫃買中心與台新證券舉辦之新加坡企業日，說明本公司財務及業務相關資訊。"
+  },
+  {
+   "date": "2026-10-30",
+   "kind": "broker_meeting",
+   "ticker": "2454",
+   "name": "2454 聯發科 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "‎(1) 公布本公司2026年第3季財務報告及2026年第4季業績展望。 (2) 參加方式：請參見https://www.mediatek.com/zh-‎tw/investor-relations/financial-information#quarterly-earnings-‎release ‎"
+  },
+  {
+   "date": "2026-11-03",
+   "kind": "broker_meeting",
+   "ticker": "2308",
+   "name": "2308 台達電 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受大和國泰證券邀請，將於上述時間地點，向法人投資者說明本公司115年第2季之財務報告相關資訊。"
+  },
+  {
+   "date": "2026-11-04",
+   "kind": "broker_meeting",
+   "ticker": "1590",
+   "name": "1590 亞德客-KY 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加盛博香港有限公司舉辦之法人說明會「Bernstein China Conference 2026」，說明本公司2026年第2季營運狀況。"
+  },
+  {
+   "date": "2026-11-04",
+   "kind": "broker_meeting",
+   "ticker": "2395",
+   "name": "2395 研華 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加大和國泰證券主辦之線上會議，就本公司115年第三季之財務數字、經營績效等資訊做相關說明。"
+  },
+  {
+   "date": "2026-11-04",
+   "kind": "investor_conference",
+   "ticker": "2412",
+   "name": "2412 中華電 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "115年第3季營運成果資料於法人說明會當日14:30後至https://www.cht.com.tw/chtir下載"
+  },
+  {
+   "date": "2026-11-05",
+   "kind": "investor_conference",
+   "ticker": "4904",
+   "name": "4904 遠傳 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "說明本公司115年度第3季營運與財務概況"
+  },
+  {
+   "date": "2026-11-06",
+   "kind": "broker_meeting",
+   "ticker": "8299",
+   "name": "8299 群聯 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加麥格理證券舉辦之3Q26財報公告線上法說會，說明營運績效等。"
+  },
+  {
+   "date": "2026-11-10",
+   "kind": "broker_meeting",
+   "ticker": "1590",
+   "name": "1590 亞德客-KY 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加永豐金證券匯立分公司舉辦之法人說明會「Taiwan Market Mover Access Day」，說明本公司2026年第2季營運狀況。"
+  },
+  {
+   "date": "2026-11-12",
+   "kind": "broker_meeting",
+   "ticker": "3045",
+   "name": "3045 台灣大 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "(1)公布本公司115年第3季財務報告。(2)參加方式：請參見https://corp.taiwanmobile.com/investor-relations/investor-relations.html"
+  },
+  {
+   "date": "2026-11-13",
+   "kind": "investor_conference",
+   "ticker": "3529",
+   "name": "3529 力旺 法人說明會",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司將舉辦2026年第三季線上法人說明會，說明本公司財務及業務相關資訊。"
+  },
+  {
+   "date": "2026-11-13",
+   "kind": "broker_meeting",
+   "ticker": "7750",
+   "name": "7750 新代 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加國泰證券舉辦之法人說明會，說明本公司2026年第三季營運概況。"
+  },
+  {
+   "date": "2026-11-17",
+   "kind": "broker_meeting",
+   "ticker": "1590",
+   "name": "1590 亞德客-KY 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加摩根大通證券舉辦之法人說明會「APAC Technology, Innovation and Growth Conference」，說明本公司2026年第3季營運狀況。"
+  },
+  {
+   "date": "2026-11-20",
+   "kind": "broker_meeting",
+   "ticker": "1590",
+   "name": "1590 亞德客-KY 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加華南永昌綜合證券舉辦之法人說明會「產業趨勢暨企業論壇」，說明本公司2026年第3季營運狀況。"
+  },
+  {
+   "date": "2026-11-24",
+   "kind": "broker_meeting",
+   "ticker": "1590",
+   "name": "1590 亞德客-KY 投資人會議",
+   "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
+   "summary": "本公司受邀參加花旗環球證券舉辦之法人說明會「Citi’s 2026 Taiwan Corporate Day」，說明本公司2026年第3季營運狀況。"
+  }
+ ]
 }
