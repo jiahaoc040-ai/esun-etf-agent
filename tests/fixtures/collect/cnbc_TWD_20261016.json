@@ -1,0 +1,22 @@
+{
+ "FormattedQuoteResult": {
+  "FormattedQuote": [
+   {
+    "symbol": "TWD=",
+    "symbolType": "symbol",
+    "code": 0,
+    "name": "US Dollar/Taiwan Dollar",
+    "shortName": "USD/TWD",
+    "last": "32.429",
+    "last_timedate": "10/16/26 EDT",
+    "last_time": "2026-10-16",
+    "changetype": "UP",
+    "type": "CURRENCY",
+    "change": "+0.087",
+    "change_pct": "+0.27%",
+    "previous_day_closing": "32.342",
+    "curmktstatus": "REG_MKT"
+   }
+  ]
+ }
+}

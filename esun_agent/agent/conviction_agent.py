@@ -28,13 +28,17 @@ from ..strategy.candidates import CandidateParams, screen
 from ..strategy.conviction import (LEVEL_LABELS, ConvictionParams, HeldPick, apply_band, blackout_events,
                                    build_portfolio, discipline, guard_triggered, pick_return, stop_loss_names,
                                    us_event_window)
+from ..collect.conference import KIND as CONF_KIND, is_upgrade_news
+from ..collect.corporate import ENDPOINTS as CORP_ENDPOINTS, LABELS as CORP_LABELS, corporate_signals
+from ..data.shares import load_shares
+from ..strategy.conviction import load_stock_events
 from ..strategy.declaration import allowed_bases, load_declaration
 from ..strategy.factors import factors_on
 from ..universe import load_universe
 from .assemble import EVIDENCE_CUTOFF_TIME, PROMPT_DIR, AssembleError, DayContext, _render, code_version, prompt_version
 from .conviction_state import ConvictionState, Pick
 from .llm import LLMError, PicksProposal, parse_picks
-from .observations import (BASIS_LABELS, EvidenceBuilder, blackout_observation, build_evidence,
+from .observations import (BASIS_LABELS, EvidenceBuilder, blackout_observation, build_evidence, corporate_observations,
                            candidate_observations, filler_observation, iso, macro_risk_flags, now_taipei,
                            position_observation, prune, us_events_observation)
 from .plan import (BUY_BUFFER, Plan, assign_funding, force_passive_trims, passive_overweight, plan_orders,
@@ -112,7 +116,12 @@ class Prep:
     us_obs: str | None = None
     macro_flags: list[str] = field(default_factory=list)         # VIX > 25、2 年期殖利率單日 > 15bp、台幣單日貶值 > 0.5%
     restr: dict = field(default_factory=dict)                    # 交易限制 {disposal|attention|suspended: {ticker: info}}（T 日有效）
-    blocked_new: set = field(default_factory=set)                # 不可新建倉（未持有且處置／注意／停牌）
+    blocked_new: set = field(default_factory=set)                # 不可新建倉（未持有且處置／注意／停牌／公司事件）
+    no_new: dict = field(default_factory=dict)                   # 公司事件：不新建倉 {ticker: [(kind, 說明)]}
+    downgrade: dict = field(default_factory=dict)                # 公司事件：信心降一級 {ticker: [(kind, 說明)]}
+    corp_obs: dict = field(default_factory=dict)                 # {ticker: [obs_id]}
+    upgrade_hints: dict = field(default_factory=dict)            # 法說後重大訊息含財測／展望上修 {ticker: obs_id}
+    gaps: tuple = ((), ())                                       # (缺少的資料, 可用的資料)
 
 
 RESTRICTION_KINDS = ("disposal", "attention", "suspended")
@@ -130,7 +139,64 @@ def active_restrictions(r: dict | None, trade_date: str) -> dict[str, dict]:
     return out
 
 
-def apply_restrictions(target: dict[str, float], cur_w: dict[str, float], restr: dict) -> tuple[dict[str, float], set[str]]:
+def _shares():
+    try:
+        return load_shares()
+    except Exception:  # noqa: BLE001 - 發行股數快照缺 → 無法算轉讓比例，只做降級
+        return None
+
+
+def conference_events(events: list[dict] | None) -> list[dict]:
+    """法說會（event_calendar.stock_events）。events 為測試注入的清單時，取其中 kind=investor_conference 且有 ticker 者。"""
+    if events is None:
+        return load_stock_events(kind=CONF_KIND)
+    return [e for e in events if e.get("kind") == CONF_KIND and e.get("ticker")]
+
+
+def upgrade_hints(ev, confs: list[dict], D: str, days: int = 7) -> dict[str, str]:
+    """法說會在 D 往前 days 天內召開、且今日有該股重大訊息含財測／展望上修字樣 → {ticker: 重大訊息 obs_id}。"""
+    from datetime import date as _date, timedelta as _td
+    lo = (_date.fromisoformat(D) - _td(days=days)).isoformat()
+    recent = {c["ticker"] for c in confs if lo <= c["date"] <= D}
+    out = {}
+    for o in ev.observations:
+        m = ev.meta[o["obs_id"]]
+        if m.get("basis") == "material_news" and m.get("ticker") in recent and not m.get("carried") \
+                and is_upgrade_news(o["statement"]):
+            out.setdefault(m["ticker"], o["obs_id"])
+    return out
+
+
+GAP_LABELS = {"us": "美股／ADR 收盤", "macro": "美國利率、VIX 與匯率", "taifex": "台指期夜盤", "market_flow": "全市場三大法人金額",
+              "restrictions": "處置／注意／停牌名單", "corporate": "上市公司事件（除權息、內部人轉讓、異常推介、董監質押）"}
+
+
+def data_gaps(inputs: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(缺少的資料, 可用的資料)。台股行情與個股法人一定有（沒有就不會產生 D-Plan）。"""
+    missing = tuple(v for k, v in GAP_LABELS.items() if not inputs.get(k))
+    have = ("台股行情與個股法人買賣超",) + tuple(v for k, v in GAP_LABELS.items() if inputs.get(k))
+    return missing, have
+
+
+def gap_note(gaps) -> str | None:
+    missing, have = gaps
+    if not missing:
+        return None
+    return f"今日缺 {'、'.join(missing)} 資料，判斷僅依 {'、'.join(have)}"
+
+
+def apply_downgrade(levels: dict[str, str], down: dict) -> tuple[dict[str, str], list[str]]:
+    """公司事件信心降一級：high → medium（medium 已是最低一級，維持）。回傳 (新等級, 被降級者)。"""
+    out, hit = dict(levels), []
+    for t, lv in levels.items():
+        if t in down and lv == "high":
+            out[t] = "medium"
+            hit.append(t)
+    return out, hit
+
+
+def apply_restrictions(target: dict[str, float], cur_w: dict[str, float], restr: dict,
+                       no_new=()) -> tuple[dict[str, float], set[str]]:
     """程式強制的交易限制（在所有目標權重計算之後套用，覆寫無交易帶、漂移保護與被動超限減碼）：
       停牌：已持有 → 目標＝現權重（鎖定，不出現在 orders，計入檔數與權重）；未持有 → 移除。
       處置：目標不得高於現權重（不 BUY／ADD）。
@@ -152,7 +218,7 @@ def apply_restrictions(target: dict[str, float], cur_w: dict[str, float], restr:
                 out[t] = c
             else:
                 out.pop(t, None)
-    for t in restr.get("attention", {}):
+    for t in list(restr.get("attention", {})) + list(no_new):     # 注意股、公司事件：不新建倉
         if cur_w.get(t, 0.0) <= 0:
             out.pop(t, None)
     return out, locked
@@ -173,7 +239,11 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
     stop = stop_loss_names(held, P)
     blk = blackout_events(T, events)
     restr = active_restrictions(ctx.inputs.get("restrictions"), T)
+    confs = conference_events(events)
+    corp = ctx.inputs.get("corporate")
+    no_new, down = corporate_signals(corp, confs, D, T, shares=_shares())
     blocked_new = {t for k in RESTRICTION_KINDS for t in restr.get(k, {}) if holdings.get(t, 0) <= 0}
+    blocked_new |= {t for t in no_new if holdings.get(t, 0) <= 0}
     elig -= blocked_new
     cands = screen(fdf, ctx.top15, C, held=set(held_picks))
     cands = cands[~cands.index.isin(sorted(blocked_new))]
@@ -197,6 +267,15 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
         passive.update({t: w for t, w in cur_w.items() if w > P.cap(t)})
     if passive:
         notes.append("passive_trim:" + ",".join(f"{t}={w:.2%}" for t, w in sorted(passive.items())))
+    urls = {k: u for k, u in CORP_ENDPOINTS.items() if any(x["kind"] == k for x in (corp or {}).get("sources", []))}
+    if confs:
+        urls["conference"] = confs[0].get("url") or "https://mopsov.twse.com.tw/mops/web/t100sb02_1"
+    sig = {t: no_new.get(t, []) + down.get(t, []) for t in set(no_new) | set(down)}
+    corp_obs = corporate_observations(b, sig, corp, urls, D)
+    hints = upgrade_hints(ev, confs, D)
+    gaps = data_gaps(ctx.inputs)
+    if no_new or down:
+        notes.append("corporate:" + "；".join(f"{t}={'/'.join(sorted({k for k, _ in sig[t]}))}" for t in sorted(sig)))
     us_win = us_event_window(T, events)
     us_obs = us_events_observation(b, us_win, D, T) if us_win else None
     flags = macro_risk_flags(ctx.inputs.get("macro"))
@@ -206,7 +285,7 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
         notes.append("restrictions:" + "；".join(f"{k}={','.join(sorted(restr[k]))}" for k in RESTRICTION_KINDS if restr.get(k)))
     return Prep(D, T, close, nav, cash, holdings, cur_w, fdf, cap, elig, held_picks, held, stop, blk, cands, ev,
                 cand_obs, pos_obs, blk_obs, ap_target, forced, notes, passive, alert, us_win, us_obs, flags, restr,
-                blocked_new)
+                blocked_new, no_new, down, corp_obs, hints, gaps)
 
 
 # ----------------------------------------------------------------------------- prompt
@@ -291,11 +370,21 @@ def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, 
     rs = ("交易限制（規則 12）——" + rs) if rs else "交易限制：今日 150 檔中沒有處置、注意或暫停交易股票（或資料缺值）"
     mf = (f"全市場三大法人買賣金額見 {prep.ev.flow_obs}（market_view.basis_refs 必須引用）" if prep.ev.flow_obs
           else "全市場三大法人買賣金額：今日缺值")
+    parts = []
+    for t in sorted(set(prep.no_new) | set(prep.downgrade)):
+        acts = ([f"不新建倉（{'、'.join(x for _, x in prep.no_new[t])}）"] if t in prep.no_new else []) + \
+               ([f"信心降一級（{'、'.join(x for _, x in prep.downgrade[t])}）"] if t in prep.downgrade else [])
+        parts.append(f"{t} {_name(t)}：{'；'.join(acts)}，見 {prep.corp_obs.get(t, [])}")
+    for t, o in sorted(prep.upgrade_hints.items()):
+        parts.append(f"{t} {_name(t)}：法說後重大訊息含財測／展望上修（{o}），可據此提高信心一級（須在 obs_ids 引用 {o}）")
+    corp_line = ("公司事件（規則 13）——" + "；".join(parts)) if parts else "公司事件：今日沒有需要處理的除權息、內部人轉讓、異常推介、董監質押或法說會"
+    note = gap_note(prep.gaps)
+    gap_line = (f"資料缺失（規則 14）：{note}") if note else "資料完整：今日各類資料皆有"
     risk = ("風險訊號：" + "；".join(prep.macro_flags) + "——依規則 10 偏防禦") if prep.macro_flags else "總經風險訊號：無（VIX ≤ 25、2 年期殖利率單日變動 ≤ 15bp、台幣單日貶值 ≤ 0.5%，或資料缺值）"
     fb = ("# 上一次輸出的問題（請修正後重新輸出完整 JSON）\n" + "\n".join(f"- {e}" for e in feedback)) if feedback else ""
     user = _render((PROMPT_DIR / USER_PROMPT).read_text(encoding="utf-8"), trade_date=ctx.trade_date,
                    prev_date=ctx.prev_date, prompt_version=prompt_version(), blackout=blk, us_events=us_ev, macro_risk=risk, restrictions=rs,
-                   market_flow=mf,
+                   market_flow=mf, corporate=corp_line, data_gaps=gap_line,
                    declaration_summary=_decl_summary(decl),
                    current_picks="\n".join(cur) or "（目前沒有高信心名單：今天是首次建倉，請挑 10–12 檔）",
                    candidates="\n".join(cl), observations="\n".join(obs), feedback=fb)
@@ -328,9 +417,10 @@ def check_picks(prop: PicksProposal, ctx: DayContext, prep: Prep, state: Convict
         errs.append(f"market_view.basis_refs 必須引用全市場三大法人買賣金額 {ev.flow_obs}（外資／投信／自營商／合計，億元）")
     for c in prop.picks:
         if c.ticker in prep.blocked_new:
-            kind = next(k for k in RESTRICTION_KINDS if c.ticker in prep.restr.get(k, {}))
-            errs.append(f"picks {c.ticker}：今日為{ {'disposal': '處置股票', 'attention': '注意股票', 'suspended': '暫停交易'}[kind]}"
-                        "且未持有，不可新建倉，請改選其他候選")
+            kind = next((k for k in RESTRICTION_KINDS if c.ticker in prep.restr.get(k, {})), None)
+            why = ({'disposal': '處置股票', 'attention': '注意股票', 'suspended': '暫停交易'}[kind] if kind else
+                   "、".join(x for _, x in prep.no_new.get(c.ticker, [])))
+            errs.append(f"picks {c.ticker}：今日為{why}且未持有，不可新建倉，請改選其他候選")
     cutoff = f"{ctx.prev_date}T{EVIDENCE_CUTOFF_TIME}"
     fresh = f"{state.prev_date}T{EVIDENCE_CUTOFF_TIME}" if state.prev_date else ""
     allowed = {b["id"]: set(b["authority"]) for b in allowed_bases(decl)}
@@ -554,8 +644,12 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
     if prop is not None:
         mv_in = prop.market_view
         mv_refs = list(mv_in.basis_refs)
+        ce = mv_in.counter_evidence
+        note = gap_note(prep.gaps)
+        if note and "今日缺" not in (ce or ""):
+            ce = (note + "。" + (ce or ""))[:500].rstrip("。") + ("。" if ce else "")
         mv = {"basis_refs": mv_refs, "logic": mv_in.logic, "regime": mv_in.regime, "stance": mv_in.stance,
-              "posture": posture, "counter_evidence": mv_in.counter_evidence}
+              "posture": posture, "counter_evidence": ce}
         if mv_in.confidence is not None:
             mv["confidence"] = mv_in.confidence
     else:
@@ -564,7 +658,7 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
               "logic": ("當日 Agent 輸出未通過檢查（已重試 3 次），依規則降級為"
                         + ("凍結既有高信心名單" if mode == "hold" else "合規基準 A")
                         + "；市場面僅參考名單整體表現與法人買賣超，不改變既定的曝險方向。"),
-              "regime": "neutral", "stance": "neutral", "posture": posture, "counter_evidence": None}
+              "regime": "neutral", "stance": "neutral", "posture": posture, "counter_evidence": gap_note(prep.gaps)}
 
     used = set(mv_refs) | {p for i in infs for p in i["premises"]}
     sources, observations, omap = prune(ev, used)
@@ -616,7 +710,7 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
     def finish(mode, prop, levels, weights, fillers, stop_exits, base_note=""):
         target, bnotes = _targets(prep, weights, P, ctx.top15, mode)
         target, trims = force_passive_trims(target, weights, prep.cur_w, set(prep.passive), P.cap)
-        target, locked = apply_restrictions(target, prep.cur_w, prep.restr)
+        target, locked = apply_restrictions(target, prep.cur_w, prep.restr, prep.no_new)
         trims = {t: w for t, w in trims.items() if t not in locked}
         plan = plan_orders(target, prep.nav, prep.cash, prep.close, prep.holdings,
                            buy_buffer=BUY_BUFFER if mode != "base" else 0.0, protect=set(trims))
@@ -659,7 +753,9 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
         if errs:
             log["errors"] = feedback = errs
             continue
-        levels = dict(prop.levels())
+        levels, downgraded = apply_downgrade(dict(prop.levels()), prep.downgrade)
+        if downgraded:
+            prep.notes.append("downgrade:" + ",".join(downgraded))
         stop_exits = (prep.stop - new_pos) & set(prep.held_picks)
         built = build_portfolio(levels, prep.cap, prep.elig, ctx.top15, P, current_fillers=state.fillers,
                                 ap_target=prep.ap_target, current=prep.cur_w,

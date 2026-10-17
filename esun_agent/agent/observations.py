@@ -253,12 +253,18 @@ def macro_observations(b: EvidenceBuilder, d: dict) -> list[str]:
     out = []
     for sid, q in (d.get("series") or {}).items():
         as_of = close_time_taipei(q["date"])
-        src = b.add_source("vendor", q["url"], as_of, name=f"FRED {sid} {q['name']}")
+        label = q.get("source") or f"FRED {sid}"                 # 匯率：CNBC TWD=（備援 FRED DEXTAUS）
+        src = b.add_source("vendor", q["url"], as_of, name=f"{label} {q['name']}")
         unit, cu = q.get("unit", ""), q.get("chg_unit", "")
-        st = (f"{q['name']}（FRED {sid}）{q['date']} 為 {q['value']:,.2f}{unit}，"
-              f"較 {q['prev_date']} {q['chg']:+.2f}{cu}")
+        prev = f"較 {q['prev_date']}" if q.get("prev_date") else "較前一交易日"
+        st = f"{q['name']}（{label}）{q['date']} 為 {q['value']:,.3f}{unit}，{prev} {q['chg']:+.2f}{cu}"
+        if q.get("change") is not None:
+            st += f"（{q['change']:+.3f}）"
         chg_key = {"bp": "chg_bp", "%": "chg_pct"}.get(cu, "chg")
-        out.append(b.add_obs([src], "macro", st, {"value": q["value"], chg_key: q["chg"]}, as_of=as_of))
+        vals = {"value": q["value"], chg_key: q["chg"]}
+        if q.get("change") is not None:
+            vals["chg"] = q["change"]
+        out.append(b.add_obs([src], "macro", st, vals, as_of=as_of))
     return out
 
 
@@ -268,8 +274,10 @@ def macro_risk_flags(d: dict | None, vix_max: float = 25.0, dgs2_bp_max: float =
     台幣單日貶值 > 0.5%（DEXTAUS 日變動 > +0.5%，外資賣壓風險）。"""
     s = (d or {}).get("series") or {}
     flags = []
-    if "DEXTAUS" in s and s["DEXTAUS"]["chg"] > twd_dep_max:
-        flags.append(f"台幣單日貶值 {s['DEXTAUS']['chg']:.2f}% > {twd_dep_max}%（DEXTAUS {s['DEXTAUS']['date']}，外資賣壓風險）")
+    fx_key = "USDTWD" if "USDTWD" in s else "DEXTAUS"
+    if fx_key in s and s[fx_key]["chg"] > twd_dep_max:
+        fx = s[fx_key]
+        flags.append(f"台幣單日貶值 {fx['chg']:.2f}% > {twd_dep_max}%（{fx.get('source') or 'FRED DEXTAUS'} {fx['date']}，外資賣壓風險）")
     if "VIXCLS" in s and s["VIXCLS"]["value"] > vix_max:
         flags.append(f"VIX {s['VIXCLS']['value']:.2f} > {vix_max:.0f}（{s['VIXCLS']['date']}）")
     if "DGS2" in s and abs(s["DGS2"]["chg"]) > dgs2_bp_max:
@@ -311,6 +319,35 @@ def restriction_observations(b: EvidenceBuilder, r: dict, date: str) -> dict[str
             if per:
                 vals["period_days"] = (datetime.fromisoformat(per[1]) - datetime.fromisoformat(per[0])).days + 1
             out.setdefault(kind, {})[t] = b.add_obs([sid], "trading_restriction", st, vals, ticker=t, as_of=as_of)
+    return out
+
+
+CORP_SOURCES = {"ex_dividend": ("twse", "TWSE 除權除息預告表"), "insider": ("twse", "TWSE 內部人持股轉讓事前申報"),
+                "tv_promo": ("twse", "TWSE 投資理財節目異常推介個股"), "pledge": ("twse", "TWSE 董監設質比例"),
+                "conference": ("mops", "公開資訊觀測站 法人說明會一覽")}
+
+
+def corporate_observations(b: EvidenceBuilder, signals: dict[str, list[tuple[str, str]]], corp: dict | None,
+                           urls: dict[str, str], date: str) -> dict[str, list[str]]:
+    """公司事件訊號（collect/corporate.corporate_signals 的結果）→ 每檔每類一則 topic=corporate_signal。
+    signals = {ticker: [(kind, 說明)]}；urls = {kind: 來源網址}。回傳 {ticker: [obs_id]}。"""
+    out: dict[str, list[str]] = {}
+    as_of = f"{date}T19:00:00+08:00"
+    for t in sorted(signals):
+        for kind, text in dict.fromkeys(signals[t]):
+            auth, name = CORP_SOURCES[kind]
+            if kind not in urls:
+                continue
+            sid = b.add_source(auth, urls[kind], f"{date}T08:00:00+08:00" if kind == "conference" else as_of, name=name)
+            info = ((corp or {}).get(kind) or {}).get(t, {})
+            vals = {"signal": 1}
+            if kind == "insider" and info.get("shares"):
+                vals["transfer_shares"] = float(info["shares"])
+            if kind == "pledge" and "ratio_pct" in info:
+                vals["pledge_ratio_pct"] = float(info["ratio_pct"])
+            oid = b.add_obs([sid], "corporate_signal", f"{t} {text}"[:500], vals, ticker=t,
+                            as_of=f"{date}T08:00:00+08:00" if kind == "conference" else as_of)
+            out.setdefault(t, []).append(oid)
     return out
 
 

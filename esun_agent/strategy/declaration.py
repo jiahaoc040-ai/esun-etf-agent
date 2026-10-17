@@ -21,7 +21,7 @@ REQUIRED_KEYS = ["version", "etf", "theme", "philosophy", "factors", "benchmark"
                  "rebalance_policy", "selection", "discipline", "fallback"]
 TILT_BASIS_IDS = {"financial_report", "investor_conference", "monthly_revenue", "trust_flow", "material_news"}
 SOURCE_AUTHORITIES = {"twse", "tpex", "taifex", "mops", "fininst", "media", "vendor"}
-REQUIRED_FACTORS = {"trust_flow", "us_events", "macro", "retail_attention"}
+REQUIRED_FACTORS = {"trust_flow", "us_events", "macro", "retail_attention", "corporate_events"}
 FACTOR_ROLES = {"primary", "supporting", "risk_overlay", "auxiliary"}
 MACRO_SERIES = ["DGS2", "DFF", "VIXCLS", "T10Y2Y", "DEXTAUS"]
 MACRO_THRESHOLDS = {"vix_max": 25.0, "dgs2_daily_change_bp_max": 15.0, "twd_daily_depreciation_pct_max": 0.5}   # 與 observations.macro_risk_flags 預設一致
@@ -36,7 +36,8 @@ def load_declaration(path: Path | None = None) -> dict:
 
 
 NAME_RE = re.compile(r"^主動[一-鿿A-Za-z ]*$")
-NAME_MAX, THEME_MAX, PHIL_MIN, PHIL_MAX = 20, 50, 100, 300
+NAME_MAX, THEME_MAX, PHIL_MIN, PHIL_MAX = 20, 50, 100, 300   # 官方上限（len() 計，標點空白都算）
+PHIL_INTERNAL_MAX = 280                                         # 內部上限：比官方 300 字留 20 字緩衝
 
 
 def validate_submission(d: dict) -> list[str]:
@@ -55,6 +56,8 @@ def validate_submission(d: dict) -> list[str]:
     phil = str(d.get("philosophy_statement", ""))
     if not PHIL_MIN <= len(phil) <= PHIL_MAX:
         errs.append(f"philosophy_statement 需在 {PHIL_MIN}～{PHIL_MAX} 字（{len(phil)}）")
+    elif len(phil) > PHIL_INTERNAL_MAX:
+        errs.append(f"philosophy_statement 超過內部上限 {PHIL_INTERNAL_MAX} 字（{len(phil)}）")
     return errs
 
 

@@ -18,11 +18,13 @@ from .news import collect_news
 from .restrictions import collect_restrictions
 from .revenue import collect_revenue, fact_event, last_reported_month
 from .taifex import collect_taifex
+from .corporate import collect_corporate
 from .fed import collect_fed
 from .fred import collect_macro
+from .fx import collect_fx, merge_fx
 from .us import collect_us
 
-ALL_STEPS = ("market", "inst", "flow", "restrict", "etf", "revenue", "news", "taifex", "us", "macro", "fed")
+ALL_STEPS = ("market", "inst", "flow", "restrict", "corp", "etf", "revenue", "news", "taifex", "us", "macro", "fed")
 
 
 @dataclass
@@ -159,6 +161,11 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
         res.warnings.extend(warns)
         res.inputs["restrictions"] = r
 
+    def do_corp():
+        c, warns = collect_corporate(f)
+        res.warnings.extend(warns)
+        res.inputs["corporate"] = c
+
     def do_fed():
         rel, warns = collect_fed(f, now)
         res.warnings.extend(warns)
@@ -167,13 +174,15 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
 
     def do_macro():
         m, warns = collect_macro(f, not_after=now.date())
-        res.warnings.extend(warns)
+        fx, fx_warns = collect_fx(f, now, m)                  # 匯率：CNBC TWD= 為主、FRED DEXTAUS 備援
+        res.warnings.extend([w for w in warns if "DEXTAUS" not in w] + fx_warns)
+        m = merge_fx(m, fx)
         if m:
             res.inputs["macro"] = m
 
     if "market" in steps:
         step("market", do_market)
-    for name, fn in (("flow", do_flow), ("restrict", do_restrict), ("etf", do_etf), ("revenue", do_revenue),
+    for name, fn in (("flow", do_flow), ("restrict", do_restrict), ("corp", do_corp), ("etf", do_etf), ("revenue", do_revenue),
                      ("news", do_news), ("taifex", do_taifex), ("us", do_us), ("macro", do_macro), ("fed", do_fed)):
         step(name, fn)
     return res

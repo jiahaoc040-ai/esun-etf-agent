@@ -295,7 +295,7 @@ def test_window_helpers():
 # ------------------------------------------------------------------ 宣告檔
 def test_declaration_v2_matches_code():
     d = load_declaration()
-    assert d["version"] == "2.3.1" and d["status"] == "final"
+    assert d["version"] == "2.4.0" and d["status"] == "final"
     assert d["portfolio_rules"]["n_total_min"] == 23 and d["portfolio_rules"]["n_total_max"] == 24
     r = d["portfolio_rules"]
     assert (r["w_high"], r["w_mid"], r["cap_other"], r["cap_tsmc"]) == (0.08, 0.055, 0.08, 0.20)

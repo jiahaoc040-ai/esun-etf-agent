@@ -6,6 +6,8 @@
 - {{macro_risk}}
 - {{market_flow}}
 - {{restrictions}}
+- {{corporate}}
+- {{data_gaps}}
 
 # 本 ETF 宣告（節錄）
 {{declaration_summary}}

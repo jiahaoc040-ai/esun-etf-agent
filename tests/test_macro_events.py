@@ -15,10 +15,7 @@ from esun_agent.strategy.declaration import DECLARATION_PATH, load_declaration, 
 from tests.test_collect import fetcher
 
 KEY = "testkey0123456789"
-PHIL = ("本基金以「資金流向領先價格」為核心信念，以投信買超為首要訊號，搭配外資動向、相對強勢與成交量異動，於台股市值前 150 大中集中配置 10–12 檔高信心標的，"
-        "其餘以大型權值股分散風險。同時追蹤美國重大事件，包括聯準會利率決策、通膨與就業數據、科技巨頭財報，以及費城半導體指數與台積電 ADR 表現，"
-        "研判其對台灣供應鏈的傳導，於事件前後調整曝險。並以 Google 搜尋熱度、投資社群討論與融資變化衡量散戶關注度，作為辨識題材升溫與過熱的輔助指標。"
-        "決策由 AI Agent 依可查證之公開資料逐日推論，刻意降低與主流主動式 ETF 的持股重疊以追求差異化報酬，並嚴守單檔、現金與檔數上限。")
+PHIL = json.loads((ROOT / "config" / "strategy_declaration.json").read_text(encoding="utf-8"))["philosophy_statement"]
 
 
 def api_json(*rows):
@@ -193,7 +190,7 @@ def test_event_calendar_official_urls_and_no_guessed_dates():
 # ------------------------------------------------------------------ 宣告與提示詞
 def test_declaration_v23_name_philosophy_and_factors():
     d = load_declaration()
-    assert d["version"] == "2.3.1" and d["etf"]["name"] == "主動台灣焦點主題"
+    assert d["version"] == "2.4.0" and d["etf"]["name"] == "主動台灣焦點主題"
     assert d["philosophy_statement"] == PHIL
     f = {x["id"]: x for x in d["factors"]}
     assert {"us_events", "macro", "retail_attention", "trust_flow"} <= set(f)

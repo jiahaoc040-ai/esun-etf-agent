@@ -236,5 +236,7 @@
    "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
    "what": "確認決議公布日仍為 2026-10-28"
   }
- ]
+ ],
+ "stock_events_note": "個股事件（法人說明會等）：由 scripts/fetch_conferences.py 從公開資訊觀測站 t100sb02_1 抓 150 檔 2026-10-20～2026-11-30 的法說會寫入（雲端連不到 MOPS，尚待 SS 在 Mac 執行）。法說前 1 個交易日不新建倉。",
+ "stock_events": []
 }

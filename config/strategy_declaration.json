@@ -1,7 +1,7 @@
 {
- "version": "2.3.1",
+ "version": "2.4.0",
  "status": "final",
- "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大；v2.2.0 總持股 23–24 檔、湊檔低重疊優先；v2.3.1 macro 加 DEXTAUS（台幣單日貶值 > 0.5% 為風險訊號）、處置／注意／停牌限制、market_view 必須引用全市場三大法人金額；v2.3.0 改名「主動台灣焦點主題」、新理念「資金流向領先價格」、宣告因子加入美國重大事件／美國利率與市場波動／散戶關注度）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
+ "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大；v2.2.0 總持股 23–24 檔、湊檔低重疊優先；v2.4.0 主題改為「以投信籌碼為核心…」、投資理念精簡至 280 字內、匯率改 CNBC TWD=（備援 FRED DEXTAUS）、公司事件（除權息、內部人轉讓、異常推介、董監質押、法說會）規則、資料缺失註記；v2.3.1 macro 加 DEXTAUS（台幣單日貶值 > 0.5% 為風險訊號）、處置／注意／停牌限制、market_view 必須引用全市場三大法人金額；v2.3.0 改名「主動台灣焦點主題」、新理念「資金流向領先價格」、宣告因子加入美國重大事件／美國利率與市場波動／散戶關注度）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
  "etf": {
   "name": "主動台灣焦點主題",
   "name_status": "final",
@@ -9,7 +9,7 @@
   "style": "集中主題＋事件驅動：10–12 檔高信心部位＋市值前 30 大湊檔數部位"
  },
  "theme": {
-  "title": "AI Agent 依公開事件集中持有 10 至 12 檔高信心台股，追求明顯偏離大盤的超額報酬",
+  "title": "以投信籌碼為核心，結合美國事件與散戶關注度，集中布局台股大型股焦點主題",
   "summary": "每日由程式從 150 檔篩出約 30 檔候選（投信 5／10 日淨買超、20 日相對強度、成交值放大，並對主動型 ETF 重疊扣分），AI Agent 閱讀月營收、財報、法說會、投信連買與重大訊息後挑出 10–12 檔高信心股票並給信心等級，程式換算為 8%／5.5% 的集中部位；其餘以市值前 30 大中與主動型 ETF 重疊較低的大型權值股小額湊足 23–24 檔持股。"
  },
  "philosophy": [
@@ -21,7 +21,7 @@
   "美國重大事件（FOMC、CPI、PCE、非農就業、NVIDIA／Apple／Microsoft／Alphabet／Amazon／Meta／AMD 財報、美國大選）的前 1 日與當日降低新建倉；VIX > 25 或美國 2 年期公債殖利率單日變動 > 15bp 視為風險訊號。",
   "散戶關注度（Google 搜尋熱度、投資社群討論、融資變化）只是輔助：只能把個股信心升或降一級，不單獨觸發買賣。"
  ],
- "philosophy_statement": "本基金以「資金流向領先價格」為核心信念，以投信買超為首要訊號，搭配外資動向、相對強勢與成交量異動，於台股市值前 150 大中集中配置 10–12 檔高信心標的，其餘以大型權值股分散風險。同時追蹤美國重大事件，包括聯準會利率決策、通膨與就業數據、科技巨頭財報，以及費城半導體指數與台積電 ADR 表現，研判其對台灣供應鏈的傳導，於事件前後調整曝險。並以 Google 搜尋熱度、投資社群討論與融資變化衡量散戶關注度，作為辨識題材升溫與過熱的輔助指標。決策由 AI Agent 依可查證之公開資料逐日推論，刻意降低與主流主動式 ETF 的持股重疊以追求差異化報酬，並嚴守單檔、現金與檔數上限。",
+ "philosophy_statement": "本基金以「資金流向領先價格」為核心信念，以投信買超為首要訊號，搭配外資動向、相對強勢與成交量異動，於台股市值前 150 大中集中配置 10–12 檔高信心標的，其餘以大型權值股分散風險。同時追蹤聯準會利率決策、通膨與就業數據、科技巨頭財報及費城半導體指數與台積電 ADR，研判對台灣供應鏈的傳導，於事件前後調整曝險；並以 Google 搜尋熱度、社群討論與融資變化衡量散戶關注度，作為辨識題材升溫與過熱的輔助。決策由 AI Agent 依可查證之公開資料逐日推論，降低與主流主動式 ETF 的持股重疊以追求差異化報酬，並嚴守單檔、現金與檔數上限。",
  "factors": [
   {
    "id": "trust_flow",
@@ -83,7 +83,7 @@
    "id": "macro",
    "label": "美國利率與市場波動",
    "role": "risk_overlay",
-   "usage": "FRED 日資料 DGS2（2 年期公債殖利率）、DFF（聯邦基金有效利率）、VIXCLS（VIX）、T10Y2Y（10Y−2Y 利差）、DEXTAUS（美元兌台幣，寫日變動）與聯準會 FOMC 聲明／利率決議新聞稿；VIX > 25、DGS2 單日變動 > 15bp 或台幣單日貶值 > 0.5%（外資賣壓）視為風險訊號：regime 不判 risk_on、降低新建倉。歷史資料以 ALFRED（realtime_start／realtime_end）取當時版本",
+   "usage": "FRED 日資料 DGS2（2 年期公債殖利率）、DFF（聯邦基金有效利率）、VIXCLS（VIX）、T10Y2Y（10Y−2Y 利差）、美元兌台幣（CNBC TWD= 為主、FRED DEXTAUS 備援，寫日變動）與聯準會 FOMC 聲明／利率決議新聞稿；VIX > 25、DGS2 單日變動 > 15bp 或台幣單日貶值 > 0.5%（外資賣壓）視為風險訊號：regime 不判 risk_on、降低新建倉。歷史資料以 ALFRED（realtime_start／realtime_end）取當時版本",
    "sources": [
     "vendor",
     "other"
@@ -102,7 +102,12 @@
    },
    "observation_topics": [
     "macro"
-   ]
+   ],
+   "fx_source": {
+    "primary": "CNBC TWD=",
+    "fallback": "FRED DEXTAUS",
+    "freshness": "日期早於最新美股交易日就換來源"
+   }
   },
   {
    "id": "retail_attention",
@@ -116,6 +121,19 @@
    ],
    "max_conviction_shift": 1,
    "can_trigger_trade": false
+  },
+  {
+   "id": "corporate_events",
+   "label": "公司事件",
+   "role": "risk_overlay",
+   "usage": "上市公司除權除息預告（T～T+3 不新建倉）、內部人持股轉讓事前申報（近 5 個交易日信心降一級；占發行股數 > 0.5% 不新建倉）、投資理財節目異常推介（不新建倉、持有者降一級）、董監設質比例 > 50%（降一級）、法人說明會（法說前 1 個交易日不新建倉；法說後重大訊息含財測／展望上修可升一級並引用該訊息）",
+   "sources": [
+    "twse",
+    "mops"
+   ],
+   "observation_topics": [
+    "corporate_signal"
+   ]
   }
  ],
  "benchmark": {
@@ -264,7 +282,9 @@
   "state": "runs/state/conviction.json",
   "keep_rank": "遲滯：已持有且仍在候選池前 30 名者預設續抱；要移出必須在 exits 引用該股今日的依據事實（財報、法說會、月營收、投信、重大訊息），候選分數或股價變動不構成移出理由",
   "macro_risk": "VIX > 25、美國 2 年期公債殖利率單日變動 > 15bp 或台幣單日貶值 > 0.5%：視為風險訊號，market_view 不判 risk_on、降低新建倉",
-  "trading_restrictions": "上市與上櫃相同：處置股票不得 BUY／ADD；注意股票不新建倉；暫停交易股票不得出現在 orders，已持有者鎖定部位（計入檔數與權重），以 no_trade_decision 說明"
+  "trading_restrictions": "上市與上櫃相同：處置股票不得 BUY／ADD；注意股票不新建倉；暫停交易股票不得出現在 orders，已持有者鎖定部位（計入檔數與權重），以 no_trade_decision 說明",
+  "corporate_events": "上市公司除權除息預告（T～T+3 不新建倉）、內部人持股轉讓事前申報（近 5 個交易日信心降一級；占發行股數 > 0.5% 不新建倉）、投資理財節目異常推介（不新建倉、持有者降一級）、董監設質比例 > 50%（降一級）、法人說明會（法說前 1 個交易日不新建倉；法說後重大訊息含財測／展望上修可升一級並引用該訊息）",
+  "data_gaps": "資料缺失時 market_view.counter_evidence 明寫「今日缺 X 資料，判斷僅依 Y」"
  },
  "fallback": {
   "name": "合規基準 A",
@@ -309,6 +329,8 @@
   "fallback_backtest_report": "docs/final_strategy_backtest.md",
   "agent_metadata_note": "agent_metadata.code_version 使用 git:<short sha>；本檔任何欄位變動都視為改版",
   "macro_code": "esun_agent/collect/fred.py",
-  "restrictions_code": "esun_agent/collect/restrictions.py"
+  "restrictions_code": "esun_agent/collect/restrictions.py",
+  "corporate_code": "esun_agent/collect/corporate.py",
+  "conference_code": "esun_agent/collect/conference.py"
  }
 }

@@ -450,6 +450,15 @@ def load_event_calendar(path: Path | None = None) -> list[dict]:
     return [e for e in json.loads(p.read_text(encoding="utf-8"))["events"] if e.get("date")]
 
 
+def load_stock_events(path: Path | None = None, kind: str | None = None) -> list[dict]:
+    """event_calendar.json 的個股事件（法說會等）：[{date, kind, ticker, name, url}]。"""
+    p = path or EVENT_CALENDAR_PATH
+    if not p.exists():
+        return []
+    evs = json.loads(p.read_text(encoding="utf-8")).get("stock_events", [])
+    return [e for e in evs if e.get("date") and e.get("ticker") and (kind is None or e.get("kind") == kind)]
+
+
 def _next_weekday(d: date) -> date:
     n = d + timedelta(days=1)
     while n.weekday() >= 5:

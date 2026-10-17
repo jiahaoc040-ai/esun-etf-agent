@@ -1,0 +1,23 @@
+[
+ {
+  "Date": "1151020",
+  "Code": "2330",
+  "Name": "台積電",
+  "Exdividend": "息",
+  "StockDividendRatio": "",
+  "CashDividend": "5.0"
+ },
+ {
+  "Date": "1151028",
+  "Code": "2454",
+  "Name": "聯發科",
+  "Exdividend": "息",
+  "CashDividend": "20.0"
+ },
+ {
+  "Date": "1151021",
+  "Code": "053040",
+  "Name": "權證",
+  "Exdividend": "息"
+ }
+]

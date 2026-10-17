@@ -47,6 +47,20 @@
 
 真實回應請存到 `tests/fixtures/market/real/` 或 `tests/fixtures/collect/real/`，parser 若不符再修。
 
+## v2.4.0 待 SS 在 Mac 上實測的端點
+
+| 端點 | 程式 | 要核對的事 |
+|---|---|---|
+| https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol?symbols=TWD%3D&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json | `collect/fx.py` | last／change／change_pct／last_time 格式（fixture 依 SS 實測值 32.429、+0.087 建立，change_pct 與 last_time 為推測） |
+| https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL | `collect/corporate.py` | 代號欄、除權除息日欄名與日期格式 |
+| https://openapi.twse.com.tw/v1/opendata/t187ap12_L | 同上 | 代號、申報日期、轉讓股數欄名 |
+| https://openapi.twse.com.tw/v1/Announcement/BFZFZU_T | 同上 | 代號欄、日期欄 |
+| https://openapi.twse.com.tw/v1/opendata/t187ap09_L | 同上 | 是否為董監質押資料；持股、設質股數、設質比例欄名 |
+| POST https://mopsov.twse.com.tw/mops/web/ajax_t100sb02_1（TYPEK=sii／otc、year=115、month=10／11） | `collect/conference.py`、`scripts/fetch_conferences.py` | 表頭「公司代號」「召開法人說明會日期」、日期格式；執行後 commit event_calendar.json |
+
+上櫃對應端點尚未找到（雲端無法查 TPEx OpenAPI 清單）：除權除息預告、內部人持股轉讓事前申報、投資理財節目異常推介、董監設質比例。
+請在 https://www.tpex.org.tw/openapi/ 的 Swagger 清單確認名稱後告知，再加進 `corporate.ENDPOINTS`。
+
 每個任務各開一個雲端工作階段（claude.ai/code → 選這個 repo），把「Prompt」整段貼上即可。
 做完先 review PR、merge，再開下一個。依序做：T1 → T2 → T4 → T3 → T5，T6 最晚 10/20 前完成。
 

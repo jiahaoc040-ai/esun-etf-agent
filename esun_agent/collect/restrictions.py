@@ -11,10 +11,12 @@
   注意（attention）：不新建倉（未持有者不買；已持有者照常）。
   停牌（suspended）：不得出現在 orders；已持有者視為鎖定部位（目標＝現權重，計入檔數與權重），以 no_trade_decision 說明。
 
-OpenAPI 欄位名稱各端點不同且未在雲端驗證（首次在 Mac 執行請核對 raw 檔），所以 parser 以關鍵字找欄位：
-  代號：鍵名含 code（Code、SecuritiesCompanyCode…）或「代號」，值為 4–6 碼。
-  期間：鍵名含 period／「期間」，值形如「115/10/20～115/11/02」或「1151020-1151102」→ 只保留涵蓋 T 者；
-        停牌另找「恢復」／resum 欄位，恢復日 ≤ T 者不算停牌。
+OpenAPI 欄位名稱各端點不同，parser 以關鍵字找欄位：
+  代號：鍵名含 code（Code、SecuritiesCompanyCode…）或「代號」；只採 4 碼普通股（權證、可轉債等 5–6 碼略過；
+        注意股非交易日會回一筆 Code 為空字串的佔位資料，也略過）。
+  期間：鍵名含 period／「期間」：TWSE punish「115/10/15～115/10/21」（全形波浪號）、TPEx disposal「1151016~1151022」
+        → 只保留涵蓋 T 者；停牌（TWTAWU：TradingHaltDate／TradingResumptionDate）恢復日 ≤ T 者不算停牌。
+  以上欄位已用 SS 實測回應（tests/fixtures/collect/real/）核對。
   沒有期間欄位 → 視為當期有效（注意股為 D 日公告、適用 T 日）。
 任一端點失敗只記警告（該類別缺值），不影響其他端點。
 """
@@ -37,14 +39,16 @@ ENDPOINTS = {
 }
 KINDS = ("disposal", "attention", "suspended")
 KIND_LABELS = {"disposal": "處置", "attention": "注意", "suspended": "暫停交易"}
+STOCK_CODE_RE = re.compile(r"\d{4}")
 DATE_RE = re.compile(r"(\d{2,4})[/\-.](\d{1,2})[/\-.](\d{1,2})|(?<!\d)(\d{7,8})(?!\d)")
 
 
 def _code(r: dict) -> str | None:
     for k, v in r.items():
         kl = k.lower()
-        if ("code" in kl or "代號" in k) and re.fullmatch(r"\d{4,6}[A-Z]?", str(v).strip()):
-            return str(v).strip()
+        if "code" in kl or "代號" in k:
+            v = str(v).strip()
+            return v if STOCK_CODE_RE.fullmatch(v) else None      # 只採 4 碼普通股（權證、可轉債等 5–6 碼略過）
     return None
 
 
