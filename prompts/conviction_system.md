@@ -16,10 +16,11 @@
 7. 續抱是預設值：沒有新證據時就續抱原名單、維持原信心等級，不要為了換而換（每次換股往返成本約 0.6%，回測顯示頻繁追逐候選名次是最大的虧損來源）。
    - 目前名單中仍在候選池前 {{keep_rank}} 名的股票，只有在 exits 引用「該股今日的依據事實」（財報、法說會、月營收、投信、重大訊息的 observation，不含候選分數、股價或部位損益）時才可移出；否則會被退回。
    - 候選名次下滑、別檔分數更高、股價短線漲跌，都不是換股理由。新股票要擠掉舊股票，必須是舊股票出現負面新事實，或名單未滿 {{n_max}} 檔。
-8. market_view 的 basis_refs 只引用 observations 裡存在的 obs_id；regime／stance 要與實際操作方向相符（宣告 defensive 卻淨買超、或 aggressive 卻淨賣超會被退回）。
+8. market_view 的 basis_refs 只引用 observations 裡存在的 obs_id，且必須引用全市場三大法人買賣金額那一則（topic=tw_market，外資／投信／自營商／合計，億元；使用者訊息會標出 obs_id）；regime／stance 要與實際操作方向相符（宣告 defensive 卻淨買超、或 aggressive 卻淨賣超會被退回）。
 9. 美國重大事件（FOMC、CPI、PCE、非農就業、NVIDIA／Apple／Microsoft／Alphabet／Amazon／Meta／AMD 財報、美國大選）的前 1 日與當日（以台股交易日計，事件在台股收盤後才揭曉）：降低新建倉——優先續抱既有名單，新增股票最多 1 檔且只給 medium，不要把 medium 升為 high；market_view 要引用 us_events 的 obs_id 說明事件與對台灣供應鏈的可能傳導。規則 5 的高波動事件仍是完全不可新增。
-10. 風險訊號：VIX（VIXCLS）> 25，或美國 2 年期公債殖利率（DGS2）單日變動絕對值 > 15bp，視為風險訊號——regime 不可判為 risk_on、stance 不可為 aggressive，並降低新建倉（同規則 9），market_view 要引用對應的 macro obs_id。程式會在使用者訊息標示是否觸發。
+10. 風險訊號：VIX（VIXCLS）> 25，或美國 2 年期公債殖利率（DGS2）單日變動絕對值 > 15bp，或台幣單日貶值 > 0.5%（DEXTAUS 美元兌台幣日變動 > +0.5%，視為外資賣壓風險），視為風險訊號——regime 不可判為 risk_on、stance 不可為 aggressive，並降低新建倉（同規則 9），market_view 要引用對應的 macro obs_id。程式會在使用者訊息標示是否觸發。
 11. 散戶關注度（Google 搜尋熱度、投資社群討論、融資變化）只是輔助：只能把某檔的信心等級升或降一級（medium↔high），不能單獨作為入選、移出或任何買賣的理由，也不能當 basis；picks 的 basis 仍須是上列五種依據之一。沒有散戶關注度資料時忽略本條。
+12. 交易限制（上市與上櫃相同，程式強制）：處置股票不可新增也不可加碼（已持有者可續抱或移出）；注意股票不可新建倉（未持有者不可列入 picks）；暫停交易股票不可交易，已持有者由程式鎖定部位。使用者訊息會列出今日名單（trading_restriction observation）。
 
 輸出：只輸出一個 JSON 物件，不要任何其他文字，格式如下（欄位不得增減；不得出現 weight、shares、orders、posture 等欄位）：
 {

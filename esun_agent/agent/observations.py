@@ -9,6 +9,9 @@ authority 依 config/strategy_declaration.json 的 selection.allowed_bases：
 輸入格式（皆為 dict，時間 ISO +08:00）：
   taifex: {"url", "content_as_of", "session_date", "close", "chg_pct", "volume", "name"?}
   us:     {"url", "content_as_of", "name"?, "quotes": {"SOX": {"close", "chg_pct"}, "TSM": {...}, ...}}
+  market_flow: {"date", "url", "content_as_of", "foreign", "trust", "dealer", "total"}（BFI82U，億元）
+  restrictions: collect/restrictions.collect_restrictions 的輸出
+  fed:    [{"title", "url", "content_as_of"}]（collect/fed.py）
   macro:  {"series": {"DGS2": {"name", "unit", "date", "value", "prev_date", "prev_value", "chg", "chg_unit", "url"}, ...}}
           （collect/fred.py；date 為觀測值實際日期，content_as_of 依它換算，不標成今天）
   events: [{"basis": 五種依據 id 或 null(一般新聞), "ticker": "2330"|null, "authority", "url", "name"?,
@@ -55,6 +58,8 @@ class Evidence:
     observations: list[dict] = field(default_factory=list)
     meta: dict[str, dict] = field(default_factory=dict)       # obs_id -> {ticker, basis, as_of, authority, carried}
     carried_ids: dict[str, list[str]] = field(default_factory=dict)   # ticker -> 由狀態檔重建的舊事件 obs_id
+    flow_obs: str | None = None                                       # BFI82U 全市場三大法人（market_view 必須引用）
+    restr_obs: dict[str, dict[str, str]] = field(default_factory=dict)  # 交易限制 {kind: {ticker: obs_id}}
 
     def obs(self, obs_id: str) -> dict:
         return next(o for o in self.observations if o["obs_id"] == obs_id)
@@ -252,20 +257,71 @@ def macro_observations(b: EvidenceBuilder, d: dict) -> list[str]:
         unit, cu = q.get("unit", ""), q.get("chg_unit", "")
         st = (f"{q['name']}（FRED {sid}）{q['date']} 為 {q['value']:,.2f}{unit}，"
               f"較 {q['prev_date']} {q['chg']:+.2f}{cu}")
-        chg_key = "chg_bp" if cu == "bp" else "chg"
+        chg_key = {"bp": "chg_bp", "%": "chg_pct"}.get(cu, "chg")
         out.append(b.add_obs([src], "macro", st, {"value": q["value"], chg_key: q["chg"]}, as_of=as_of))
     return out
 
 
-def macro_risk_flags(d: dict | None, vix_max: float = 25.0, dgs2_bp_max: float = 15.0) -> list[str]:
-    """提示詞用的風險訊號（不寫進 observation）：VIX > 25、2 年期殖利率單日變動絕對值 > 15bp。"""
+def macro_risk_flags(d: dict | None, vix_max: float = 25.0, dgs2_bp_max: float = 15.0,
+                     twd_dep_max: float = 0.5) -> list[str]:
+    """提示詞用的風險訊號（不寫進 observation）：VIX > 25、2 年期殖利率單日變動絕對值 > 15bp、
+    台幣單日貶值 > 0.5%（DEXTAUS 日變動 > +0.5%，外資賣壓風險）。"""
     s = (d or {}).get("series") or {}
     flags = []
+    if "DEXTAUS" in s and s["DEXTAUS"]["chg"] > twd_dep_max:
+        flags.append(f"台幣單日貶值 {s['DEXTAUS']['chg']:.2f}% > {twd_dep_max}%（DEXTAUS {s['DEXTAUS']['date']}，外資賣壓風險）")
     if "VIXCLS" in s and s["VIXCLS"]["value"] > vix_max:
         flags.append(f"VIX {s['VIXCLS']['value']:.2f} > {vix_max:.0f}（{s['VIXCLS']['date']}）")
     if "DGS2" in s and abs(s["DGS2"]["chg"]) > dgs2_bp_max:
         flags.append(f"2 年期殖利率單日 {s['DGS2']['chg']:+.1f}bp，絕對值 > {dgs2_bp_max:.0f}bp（{s['DGS2']['date']}）")
     return flags
+
+
+def market_flow_observation(b: EvidenceBuilder, d: dict) -> str:
+    """TWSE BFI82U 全市場三大法人買賣差額（億元）→ topic=tw_market（market_view 必須引用）。"""
+    sid = b.add_source("twse", d["url"], d["content_as_of"], name=f"TWSE 三大法人買賣金額統計表（{d['date']}）")
+    st = (f"{d['date']} 上市三大法人買賣差額：外資及陸資(不含外資自營商) {d['foreign']:+,.2f} 億元、投信 {d['trust']:+,.2f} 億元、"
+          f"自營商 {d['dealer']:+,.2f} 億元，合計 {d['total']:+,.2f} 億元")
+    return b.add_obs([sid], "tw_market", st, {"foreign_net_100m": d["foreign"], "trust_net_100m": d["trust"],
+                                              "dealer_net_100m": d["dealer"], "total_net_100m": d["total"]},
+                     as_of=d["content_as_of"])
+
+
+RESTRICTION_LABELS = {"disposal": "處置股票", "attention": "注意股票", "suspended": "暫停交易"}
+RESTRICTION_RULES = {"disposal": "處置期間不得 BUY／ADD", "attention": "不新建倉", "suspended": "不得委託，已持有者鎖定部位"}
+
+
+def restriction_observations(b: EvidenceBuilder, r: dict, date: str) -> dict[str, dict[str, str]]:
+    """交易限制（collect/restrictions.py）→ 每檔每類一則 topic=trading_restriction（ticker 為該股，authority twse／tpex，
+    url 為公告端點；content_as_of 取決策日 D 19:00）。回傳 {kind: {ticker: obs_id}}。"""
+    urls = {(s_["authority"], s_["kind"]): s_["url"] for s_ in r.get("sources", [])}
+    as_of = f"{date}T19:00:00+08:00"
+    out: dict[str, dict[str, str]] = {}
+    for kind in ("disposal", "attention", "suspended"):
+        for t, info in sorted((r.get(kind) or {}).items()):
+            auth = info.get("authority") or authority_for(t)
+            url = urls.get((auth, kind))
+            if not url:
+                continue
+            sid = b.add_source(auth, url, as_of, name=f"{'上市' if auth == 'twse' else '上櫃'}{RESTRICTION_LABELS[kind]}公告")
+            per = info.get("period")
+            st = (f"{t} 列為{'上市' if auth == 'twse' else '上櫃'}{RESTRICTION_LABELS[kind]}"
+                  + (f"（期間 {per[0]}～{per[1]}）" if per else "") + f"，交易日 {r.get('trade_date', '')} {RESTRICTION_RULES[kind]}")
+            vals = {"restricted": 1}
+            if per:
+                vals["period_days"] = (datetime.fromisoformat(per[1]) - datetime.fromisoformat(per[0])).days + 1
+            out.setdefault(kind, {})[t] = b.add_obs([sid], "trading_restriction", st, vals, ticker=t, as_of=as_of)
+    return out
+
+
+def fed_observations(b: EvidenceBuilder, releases: list[dict]) -> list[str]:
+    """聯準會 FOMC 聲明／利率決議新聞稿 → topic=macro（authority other，url＝新聞稿原文頁）。"""
+    out = []
+    for x in releases[:3]:
+        sid = b.add_source("other", x["url"], x["content_as_of"], name=f"Federal Reserve：{x['title']}")
+        out.append(b.add_obs([sid], "macro", f"聯準會新聞稿（{x['content_as_of'][:16].replace('T', ' ')} 台北時間）：{x['title']}"[:500],
+                             {"n_releases": 1}, as_of=x["content_as_of"]))
+    return out
 
 
 def event_observation(b: EvidenceBuilder, e: dict, declaration: dict | None = None) -> str:
@@ -309,8 +365,14 @@ def build_evidence(panel, date: str, *, inputs: dict | None = None, focus_ticker
         taifex_observation(b, inputs["taifex"])
     if inputs.get("us"):
         us_observation(b, inputs["us"])
+    if inputs.get("market_flow"):
+        b.ev.flow_obs = market_flow_observation(b, inputs["market_flow"])
     if inputs.get("macro"):
         macro_observations(b, inputs["macro"])
+    if inputs.get("fed"):
+        fed_observations(b, inputs["fed"])
+    if inputs.get("restrictions"):
+        b.ev.restr_obs = restriction_observations(b, inputs["restrictions"], date)
     if focus_tickers:
         trust_flow_observations(b, panel, date, focus_tickers)
     for e in inputs.get("events", []):

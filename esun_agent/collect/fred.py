@@ -10,7 +10,8 @@
   金鑰只放在 query 參數（params），不會出現在 source url、raw 檔名裡；錯誤訊息中的 api_key 一律遮蔽成 ***。
   HTTP 錯誤的警告包含狀態碼與 FRED 回傳的 error_message。source url 一律用數列頁 https://fred.stlouisfed.org/series/<id>。
 
-總經數列（macro）：DGS2 2 年期公債殖利率、DFF 聯邦基金有效利率、VIXCLS VIX、T10Y2Y 10Y−2Y 利差（皆為日資料）。
+總經數列（macro）：DGS2 2 年期公債殖利率、DFF 聯邦基金有效利率、VIXCLS VIX、T10Y2Y 10Y−2Y 利差、
+DEXTAUS 美元兌新台幣（皆為日資料；DEXTAUS 寫日變動百分比）。
 不用 DTWEXBGS（美元指數，每週更新）。
 """
 from __future__ import annotations
@@ -32,12 +33,14 @@ SERIES_PAGE = "https://fred.stlouisfed.org/series/{s}"
 TIMEOUT, RETRIES = 60, 3                               # 逾時 60 秒；第一次失敗後再重試 2 次
 LOOKBACK_DAYS = 21                                     # 取近 3 週，足夠找到最後兩個有值的日期（跨假日）
 
-# id → (中文名, 單位, 日變化的單位與倍率)
+# id → (中文名, 單位, 日變化的單位, 倍率)；倍率 None ＝ 日變動百分比 (v1 / v0 − 1) × 100
+# DEXTAUS（美元兌新台幣，H.10）：數值上升＝台幣貶值；FRED 約每週一次補上前一週的日資料，觀測日常落後數日。
 MACRO_SERIES = {
     "DGS2": ("美國 2 年期公債殖利率", "%", "bp", 100.0),
     "DFF": ("聯邦基金有效利率", "%", "bp", 100.0),
     "VIXCLS": ("VIX 波動率指數", "點", "點", 1.0),
     "T10Y2Y": ("美債 10 年減 2 年利差", "%", "bp", 100.0),
+    "DEXTAUS": ("美元兌新台幣匯率", " 台幣／美元", "%", None),
 }
 
 
@@ -171,7 +174,8 @@ def collect_macro(fetcher: Fetcher, not_after: date | None = None, vintage: date
             continue
         modes.add(mode)
         out[sid] = {"name": name, "unit": unit, "date": d1, "value": v1, "prev_date": d0, "prev_value": v0,
-                    "chg": round((v1 - v0) * mult, 4), "chg_unit": chg_unit, "url": url}
+                    "chg": round((v1 / v0 - 1) * 100 if mult is None else (v1 - v0) * mult, 4),
+                    "chg_unit": chg_unit, "url": url}
     if not out:
         return None, warns + ["FRED 總經數列全部失敗，今日不使用 macro 資料"]
     if "csv" in modes:

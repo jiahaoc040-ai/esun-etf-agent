@@ -1,7 +1,7 @@
 {
- "version": "2.3.0",
+ "version": "2.3.1",
  "status": "final",
- "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大；v2.2.0 總持股 23–24 檔、湊檔低重疊優先；v2.3.0 改名「主動台灣焦點主題」、新理念「資金流向領先價格」、宣告因子加入美國重大事件／美國利率與市場波動／散戶關注度）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
+ "status_note": "策略改版（v2.0.0；v2.1.0 權重下修為 8%／5.5%、預設遲滯續抱、改用真實前 15 大；v2.2.0 總持股 23–24 檔、湊檔低重疊優先；v2.3.1 macro 加 DEXTAUS（台幣單日貶值 > 0.5% 為風險訊號）、處置／注意／停牌限制、market_view 必須引用全市場三大法人金額；v2.3.0 改名「主動台灣焦點主題」、新理念「資金流向領先價格」、宣告因子加入美國重大事件／美國利率與市場波動／散戶關注度）：由「市值基準 ±3% 小幅加減碼」改為「集中主題＋事件驅動」。修改任何欄位＝改版，agent_metadata.code_version 需對應新的 git commit；portfolio_rules／candidate_rules／fallback.portfolio_rules 必須與 ConvictionParams／CandidateParams／FinalParams 一致（有測試）。",
  "etf": {
   "name": "主動台灣焦點主題",
   "name_status": "final",
@@ -37,7 +37,7 @@
    "id": "foreign_flow",
    "label": "外資動向",
    "role": "supporting",
-   "usage": "三大法人整體買賣超（市場級 observation），輔助判斷 regime",
+   "usage": "全市場三大法人買賣金額（TWSE BFI82U：外資及陸資、投信、自營商、合計，億元）與個股外資買賣超；market_view 必須引用全市場金額",
    "sources": [
     "twse",
     "tpex"
@@ -83,19 +83,22 @@
    "id": "macro",
    "label": "美國利率與市場波動",
    "role": "risk_overlay",
-   "usage": "FRED 日資料 DGS2（2 年期公債殖利率）、DFF（聯邦基金有效利率）、VIXCLS（VIX）、T10Y2Y（10Y−2Y 利差）；VIX > 25 或 DGS2 單日變動 > 15bp 視為風險訊號：regime 不判 risk_on、降低新建倉。歷史資料以 ALFRED（realtime_start／realtime_end）取當時版本",
+   "usage": "FRED 日資料 DGS2（2 年期公債殖利率）、DFF（聯邦基金有效利率）、VIXCLS（VIX）、T10Y2Y（10Y−2Y 利差）、DEXTAUS（美元兌台幣，寫日變動）與聯準會 FOMC 聲明／利率決議新聞稿；VIX > 25、DGS2 單日變動 > 15bp 或台幣單日貶值 > 0.5%（外資賣壓）視為風險訊號：regime 不判 risk_on、降低新建倉。歷史資料以 ALFRED（realtime_start／realtime_end）取當時版本",
    "sources": [
-    "vendor"
+    "vendor",
+    "other"
    ],
    "series": [
     "DGS2",
     "DFF",
     "VIXCLS",
-    "T10Y2Y"
+    "T10Y2Y",
+    "DEXTAUS"
    ],
    "risk_thresholds": {
     "vix_max": 25.0,
-    "dgs2_daily_change_bp_max": 15.0
+    "dgs2_daily_change_bp_max": 15.0,
+    "twd_daily_depreciation_pct_max": 0.5
    },
    "observation_topics": [
     "macro"
@@ -260,7 +263,8 @@
   "event_blackout": "FOMC 利率決議、NVIDIA 財報、美國大選（config/event_calendar.json）的前一交易日：不新增部位、不升級，既有部位凍結（停損與漂移保護照常）；其他美國重大事件（CPI、PCE、非農就業、其他科技巨頭財報）的前 1 日與當日由 Agent 降低新建倉",
   "state": "runs/state/conviction.json",
   "keep_rank": "遲滯：已持有且仍在候選池前 30 名者預設續抱；要移出必須在 exits 引用該股今日的依據事實（財報、法說會、月營收、投信、重大訊息），候選分數或股價變動不構成移出理由",
-  "macro_risk": "VIX > 25 或美國 2 年期公債殖利率單日變動 > 15bp：視為風險訊號，market_view 不判 risk_on、降低新建倉"
+  "macro_risk": "VIX > 25、美國 2 年期公債殖利率單日變動 > 15bp 或台幣單日貶值 > 0.5%：視為風險訊號，market_view 不判 risk_on、降低新建倉",
+  "trading_restrictions": "上市與上櫃相同：處置股票不得 BUY／ADD；注意股票不新建倉；暫停交易股票不得出現在 orders，已持有者鎖定部位（計入檔數與權重），以 no_trade_decision 說明"
  },
  "fallback": {
   "name": "合規基準 A",
@@ -304,6 +308,7 @@
   "backtest_report": "docs/conviction_backtest.md",
   "fallback_backtest_report": "docs/final_strategy_backtest.md",
   "agent_metadata_note": "agent_metadata.code_version 使用 git:<short sha>；本檔任何欄位變動都視為改版",
-  "macro_code": "esun_agent/collect/fred.py"
+  "macro_code": "esun_agent/collect/fred.py",
+  "restrictions_code": "esun_agent/collect/restrictions.py"
  }
 }

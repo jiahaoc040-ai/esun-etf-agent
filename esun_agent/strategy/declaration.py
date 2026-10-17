@@ -23,8 +23,8 @@ TILT_BASIS_IDS = {"financial_report", "investor_conference", "monthly_revenue", 
 SOURCE_AUTHORITIES = {"twse", "tpex", "taifex", "mops", "fininst", "media", "vendor"}
 REQUIRED_FACTORS = {"trust_flow", "us_events", "macro", "retail_attention"}
 FACTOR_ROLES = {"primary", "supporting", "risk_overlay", "auxiliary"}
-MACRO_SERIES = ["DGS2", "DFF", "VIXCLS", "T10Y2Y"]
-MACRO_THRESHOLDS = {"vix_max": 25.0, "dgs2_daily_change_bp_max": 15.0}   # 與 observations.macro_risk_flags 預設一致
+MACRO_SERIES = ["DGS2", "DFF", "VIXCLS", "T10Y2Y", "DEXTAUS"]
+MACRO_THRESHOLDS = {"vix_max": 25.0, "dgs2_daily_change_bp_max": 15.0, "twd_daily_depreciation_pct_max": 0.5}   # 與 observations.macro_risk_flags 預設一致
 
 
 def load_declaration(path: Path | None = None) -> dict:

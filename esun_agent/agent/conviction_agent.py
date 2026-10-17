@@ -110,7 +110,52 @@ class Prep:
     passive_alert: bool = False                                  # 資料包合規提示已點出單一個股權重異常
     us_window: list = field(default_factory=list)                # 美國重大事件 [(事件, "當日"|"前1日")]（提示詞：降低新建倉）
     us_obs: str | None = None
-    macro_flags: list[str] = field(default_factory=list)         # VIX > 25、2 年期殖利率單日 > 15bp
+    macro_flags: list[str] = field(default_factory=list)         # VIX > 25、2 年期殖利率單日 > 15bp、台幣單日貶值 > 0.5%
+    restr: dict = field(default_factory=dict)                    # 交易限制 {disposal|attention|suspended: {ticker: info}}（T 日有效）
+    blocked_new: set = field(default_factory=set)                # 不可新建倉（未持有且處置／注意／停牌）
+
+
+RESTRICTION_KINDS = ("disposal", "attention", "suspended")
+
+
+def active_restrictions(r: dict | None, trade_date: str) -> dict[str, dict]:
+    """收集時以近似的下一交易日篩過；這裡再以實際交易日 T 篩一次（有期間者須涵蓋 T）。"""
+    out: dict[str, dict] = {k: {} for k in RESTRICTION_KINDS}
+    for k in RESTRICTION_KINDS:
+        for t, info in ((r or {}).get(k) or {}).items():
+            per = info.get("period")
+            if per and not (per[0] <= trade_date <= per[1]):
+                continue
+            out[k][t] = info
+    return out
+
+
+def apply_restrictions(target: dict[str, float], cur_w: dict[str, float], restr: dict) -> tuple[dict[str, float], set[str]]:
+    """程式強制的交易限制（在所有目標權重計算之後套用，覆寫無交易帶、漂移保護與被動超限減碼）：
+      停牌：已持有 → 目標＝現權重（鎖定，不出現在 orders，計入檔數與權重）；未持有 → 移除。
+      處置：目標不得高於現權重（不 BUY／ADD）。
+      注意：未持有 → 移除（不新建倉）。
+    回傳 (新目標, 鎖定的停牌持股)。"""
+    out, locked = dict(target), set()
+    for t in restr.get("suspended", {}):
+        if cur_w.get(t, 0.0) > 0:
+            out[t] = cur_w[t]
+            locked.add(t)
+        else:
+            out.pop(t, None)
+    for t in restr.get("disposal", {}):
+        if t in locked:
+            continue
+        c = cur_w.get(t, 0.0)
+        if out.get(t, 0.0) > c:
+            if c > 0:
+                out[t] = c
+            else:
+                out.pop(t, None)
+    for t in restr.get("attention", {}):
+        if cur_w.get(t, 0.0) <= 0:
+            out.pop(t, None)
+    return out, locked
 
 
 def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: CandidateParams,
@@ -127,7 +172,11 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
             for t, p in held_picks.items()}
     stop = stop_loss_names(held, P)
     blk = blackout_events(T, events)
+    restr = active_restrictions(ctx.inputs.get("restrictions"), T)
+    blocked_new = {t for k in RESTRICTION_KINDS for t in restr.get(k, {}) if holdings.get(t, 0) <= 0}
+    elig -= blocked_new
     cands = screen(fdf, ctx.top15, C, held=set(held_picks))
+    cands = cands[~cands.index.isin(sorted(blocked_new))]
     ev = build_evidence(ctx.panel, D, inputs=ctx.inputs, carried={t: p.evidence for t, p in held_picks.items()},
                         fetched_at=ctx.fetched_at, declaration=decl)
     b = EvidenceBuilder(ctx.fetched_at, ev)
@@ -153,8 +202,11 @@ def prepare(ctx: DayContext, state: ConvictionState, P: ConvictionParams, C: Can
     flags = macro_risk_flags(ctx.inputs.get("macro"))
     if flags:
         notes.append("macro_risk:" + "；".join(flags))
+    if any(restr.get(k) for k in RESTRICTION_KINDS):
+        notes.append("restrictions:" + "；".join(f"{k}={','.join(sorted(restr[k]))}" for k in RESTRICTION_KINDS if restr.get(k)))
     return Prep(D, T, close, nav, cash, holdings, cur_w, fdf, cap, elig, held_picks, held, stop, blk, cands, ev,
-                cand_obs, pos_obs, blk_obs, ap_target, forced, notes, passive, alert, us_win, us_obs, flags)
+                cand_obs, pos_obs, blk_obs, ap_target, forced, notes, passive, alert, us_win, us_obs, flags, restr,
+                blocked_new)
 
 
 # ----------------------------------------------------------------------------- prompt
@@ -233,10 +285,17 @@ def build_prompts(ctx: DayContext, prep: Prep, decl: dict, P: ConvictionParams, 
                  + "——依規則 9 降低新建倉")
     else:
         us_ev = "今天不是美國重大事件的前 1 日或當日"
-    risk = ("風險訊號：" + "；".join(prep.macro_flags) + "——依規則 10 偏防禦") if prep.macro_flags else "總經風險訊號：無（VIX ≤ 25、2 年期殖利率單日變動 ≤ 15bp，或資料缺值）"
+    labels = {"disposal": "處置（不得新增或加碼）", "attention": "注意（不新建倉）", "suspended": "暫停交易（不得交易，持有者鎖定）"}
+    rs = "；".join(f"{labels[k]}：{'、'.join(f'{t} {_name(t)}' for t in sorted(prep.restr[k]))}"
+                  for k in RESTRICTION_KINDS if prep.restr.get(k))
+    rs = ("交易限制（規則 12）——" + rs) if rs else "交易限制：今日 150 檔中沒有處置、注意或暫停交易股票（或資料缺值）"
+    mf = (f"全市場三大法人買賣金額見 {prep.ev.flow_obs}（market_view.basis_refs 必須引用）" if prep.ev.flow_obs
+          else "全市場三大法人買賣金額：今日缺值")
+    risk = ("風險訊號：" + "；".join(prep.macro_flags) + "——依規則 10 偏防禦") if prep.macro_flags else "總經風險訊號：無（VIX ≤ 25、2 年期殖利率單日變動 ≤ 15bp、台幣單日貶值 ≤ 0.5%，或資料缺值）"
     fb = ("# 上一次輸出的問題（請修正後重新輸出完整 JSON）\n" + "\n".join(f"- {e}" for e in feedback)) if feedback else ""
     user = _render((PROMPT_DIR / USER_PROMPT).read_text(encoding="utf-8"), trade_date=ctx.trade_date,
-                   prev_date=ctx.prev_date, prompt_version=prompt_version(), blackout=blk, us_events=us_ev, macro_risk=risk,
+                   prev_date=ctx.prev_date, prompt_version=prompt_version(), blackout=blk, us_events=us_ev, macro_risk=risk, restrictions=rs,
+                   market_flow=mf,
                    declaration_summary=_decl_summary(decl),
                    current_picks="\n".join(cur) or "（目前沒有高信心名單：今天是首次建倉，請挑 10–12 檔）",
                    candidates="\n".join(cl), observations="\n".join(obs), feedback=fb)
@@ -265,6 +324,13 @@ def check_picks(prop: PicksProposal, ctx: DayContext, prep: Prep, state: Convict
     for r in prop.market_view.basis_refs:
         if r not in ids:
             errs.append(f"market_view.basis_refs 引用不存在的 {r}")
+    if ev.flow_obs and ev.flow_obs not in prop.market_view.basis_refs:
+        errs.append(f"market_view.basis_refs 必須引用全市場三大法人買賣金額 {ev.flow_obs}（外資／投信／自營商／合計，億元）")
+    for c in prop.picks:
+        if c.ticker in prep.blocked_new:
+            kind = next(k for k in RESTRICTION_KINDS if c.ticker in prep.restr.get(k, {}))
+            errs.append(f"picks {c.ticker}：今日為{ {'disposal': '處置股票', 'attention': '注意股票', 'suspended': '暫停交易'}[kind]}"
+                        "且未持有，不可新建倉，請改選其他候選")
     cutoff = f"{ctx.prev_date}T{EVIDENCE_CUTOFF_TIME}"
     fresh = f"{state.prev_date}T{EVIDENCE_CUTOFF_TIME}" if state.prev_date else ""
     allowed = {b["id"]: set(b["authority"]) for b in allowed_bases(decl)}
@@ -324,7 +390,7 @@ def check_picks(prop: PicksProposal, ctx: DayContext, prep: Prep, state: Convict
 def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | None, levels: dict[str, str],
               target: dict[str, float], fillers: list[str], plan: Plan, usage: dict, started: datetime,
               completed: datetime, provider: str, model: str, stop_exits: set[str], with_funding: bool = True,
-              base_note: str = "") -> dict:
+              base_note: str = "", locked: set[str] = frozenset()) -> dict:
     P_band = ConvictionParams().band
     nav, close, D, ev = prep.nav, prep.close, prep.D, prep.ev
     b = EvidenceBuilder(ctx.fetched_at, ev)
@@ -447,6 +513,12 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
         rebalance_inf = add_inf([dev_obs], f"{why}；與現權重比較，新增、移出或偏離超過無交易帶 {P_band:.1%} 者才調整；"
                                            "委託由官方公式機械推導，委託後現金比預留買進價差緩衝。",
                                 f"調整 {len(decisions)} 檔以回到目標組合")
+    susp_inf: dict[str, str] = {}
+    for t in sorted(set(plan.no_trade) & set(locked)):
+        o = ev.restr_obs.get("suspended", {}).get(t)
+        if o:
+            susp_inf[t] = add_inf([o], f"{_name(t)} 今日暫停交易，依規則不得委託；已持有部位視為鎖定（前日權重 {cur.get(t, 0.0):.2%}，"
+                                       "仍計入持股檔數與權重），恢復交易後再依目標組合調整。", f"{_name(t)} 停牌，鎖定部位")
     if plan.no_trade:
         notrade_inf = add_inf([dev_obs], f"其餘持股與目標權重差距在無交易帶 {P_band:.1%} 內（或當日無法交易），維持原部位，"
                                          "不為微小偏離付出交易成本（往返約 0.6%）。", f"維持 {len(plan.no_trade)} 檔不動")
@@ -472,6 +544,10 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
             refs.append(base_inf)
         if blk_inf:
             refs.append(blk_inf)
+        if t in susp_inf:
+            no_trade.append({"ticker": t, "reason_refs": [susp_inf[t]],
+                             "reason": f"暫停交易：不得委託，鎖定部位（權重 {cur.get(t, 0.0):.2%}，計入檔數與權重）"[:300]})
+            continue
         no_trade.append({"ticker": t, "reason_refs": list(dict.fromkeys(refs + [notrade_inf])),
                          "reason": f"權重 {cur.get(t, 0.0):.2%} 與目標差距在無交易帶 {P_band:.1%} 內或當日無法交易，維持部位"[:300]})
 
@@ -483,7 +559,7 @@ def build_doc(ctx: DayContext, prep: Prep, *, mode: str, prop: PicksProposal | N
         if mv_in.confidence is not None:
             mv["confidence"] = mv_in.confidence
     else:
-        mv_refs = [mkt, inst]
+        mv_refs = [mkt, inst] + ([ev.flow_obs] if ev.flow_obs else [])
         mv = {"basis_refs": mv_refs,
               "logic": ("當日 Agent 輸出未通過檢查（已重試 3 次），依規則降級為"
                         + ("凍結既有高信心名單" if mode == "hold" else "合規基準 A")
@@ -540,10 +616,13 @@ def assemble_conviction_day(ctx: DayContext, llm, state: ConvictionState | None 
     def finish(mode, prop, levels, weights, fillers, stop_exits, base_note=""):
         target, bnotes = _targets(prep, weights, P, ctx.top15, mode)
         target, trims = force_passive_trims(target, weights, prep.cur_w, set(prep.passive), P.cap)
+        target, locked = apply_restrictions(target, prep.cur_w, prep.restr)
+        trims = {t: w for t, w in trims.items() if t not in locked}
         plan = plan_orders(target, prep.nav, prep.cash, prep.close, prep.holdings,
                            buy_buffer=BUY_BUFFER if mode != "base" else 0.0, protect=set(trims))
         kw = dict(mode=mode, prop=prop, levels=levels, target=target, fillers=fillers, plan=plan, usage=usage,
-                  started=started, provider=provider, model=model, stop_exits=stop_exits, base_note=base_note)
+                  started=started, provider=provider, model=model, stop_exits=stop_exits, base_note=base_note,
+                  locked=locked)
         doc = build_doc(ctx, prep, completed=clock(), **kw)
         errs: list[str] = []
         if prop is not None:

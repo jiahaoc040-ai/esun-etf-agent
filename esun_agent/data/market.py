@@ -1,9 +1,12 @@
 """上市櫃日行情（含成交均價）與三大法人買賣超。
 
 來源（皆為官方，D-Plan sources.authority：上市 twse、上櫃 tpex）：
-- TWSE OpenAPI STOCK_DAY_ALL（最新交易日全市場）、exchangeReport/STOCK_DAY（個股依月份）
+- TWSE OpenAPI STOCK_DAY_ALL（最新交易日全市場；日期不是 D 時改用 rwd afterTrading/MI_INDEX 依日期查詢）、
+  exchangeReport/STOCK_DAY（個股依月份）
 - TPEx OpenAPI tpex_mainboard_daily_close_quotes（最新交易日）、daily_close_quotes（依日期）
-- TWSE fund/T86、TPEx tpex_3insti_daily_trading（三大法人）
+- TWSE fund/T86（selectType 一律 ALL，再自行篩 150 檔：實測 2026-10-16 ALLBUT0999 回「查無資料」）、
+  TPEx tpex_3insti_daily_trading（三大法人）
+- TWSE fund/BFI82U（全市場三大法人買賣金額，億元 → tw_market observation）
 
 parser 皆為純函式（不碰網路），以 tests/fixtures/market/ 的假資料測試。
 抓取函式只做 HTTP + 呼叫 parser。只保留 universe_150 的 150 檔。
@@ -34,6 +37,9 @@ INST_COLUMNS = ["date", "ticker", "foreign_net", "trust_net", "dealer_net", "tot
 TWSE_DAY_ALL_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 TWSE_STOCK_DAY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
 TWSE_T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
+TWSE_T86_SELECT = "ALL"
+TWSE_MI_INDEX_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+TWSE_BFI82U_URL = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
 TPEX_DAY_ALL_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
 # 櫃買中心新站端點（舊的 /web/stock/.../stk_quote_result.php 會忽略日期參數、永遠回傳最新交易日）
 TPEX_DAY_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/otc"
@@ -140,6 +146,58 @@ def parse_twse_stock_day(payload: dict, ticker: str) -> pd.DataFrame:
     return _finish(rows, MARKET_COLUMNS)
 
 
+def strip_html(x) -> str:
+    return re.sub(r"<[^>]*>", "", str(x if x is not None else "")).strip()
+
+
+def parse_twse_mi_index(payload: dict, d: date, universe: dict | None = None) -> pd.DataFrame:
+    """TWSE rwd afterTrading/MI_INDEX?type=ALLBUT0999（依日期）。stat 必須 OK、date 必須等於 d；
+    在 tables 裡找 title 含「每日收盤行情」的表（不寫死索引）。fields：證券代號、成交股數、成交金額、開盤價、最高價、
+    最低價、收盤價、漲跌(+/-)（含 HTML 標籤）…。成交均價 = 成交金額 ÷ 成交股數。"""
+    uni = universe if universe is not None else load_universe()
+    if payload.get("stat") != "OK":
+        raise ValueError(f"MI_INDEX stat={payload.get('stat')!r}")
+    check_payload_date(payload, d, "TWSE MI_INDEX")
+    table = next((t for t in payload.get("tables") or [] if "每日收盤行情" in str(t.get("title", ""))), None)
+    if table is None:
+        raise KeyError("MI_INDEX 找不到標題含「每日收盤行情」的表："
+                       + "、".join(str(t.get("title", "")) for t in payload.get("tables") or []))
+    f = [strip_html(x) for x in table["fields"]]
+    ic, iv, iva = _find_col(f, "證券代號"), _find_col(f, "成交股數"), _find_col(f, "成交金額")
+    io, ih, il, icl = _find_col(f, "開盤價"), _find_col(f, "最高價"), _find_col(f, "最低價"), _find_col(f, "收盤價")
+    rows = []
+    for r in table.get("data") or []:
+        r = [strip_html(x) for x in r]
+        code = r[ic]
+        if code not in uni or uni[code]["market"] != "TWSE":
+            continue
+        row = _make_row(d, code, r[io], r[ih], r[il], r[icl], r[iv], r[iva])
+        if row:
+            rows.append(row)
+    return _finish(rows, MARKET_COLUMNS)
+
+
+def parse_twse_bfi82u(payload: dict, d: date) -> dict:
+    """TWSE fund/BFI82U（type=day）全市場三大法人買賣金額。回傳買賣差額（億元）：
+    {"foreign", "trust", "dealer", "total"}；外資＝「外資及陸資(不含外資自營商)」，自營商＝所有「自營商…」列加總
+    （自行買賣＋避險；不含外資自營商）。stat 不是 OK 或日期不符 → ValueError。"""
+    if payload.get("stat") != "OK":
+        raise ValueError(f"BFI82U stat={payload.get('stat')!r}")
+    check_payload_date(payload, d, "TWSE BFI82U")
+    fields, data = payload.get("fields"), payload.get("data")
+    if not data and payload.get("tables"):
+        fields, data = payload["tables"][0].get("fields"), payload["tables"][0].get("data")
+    i_net = _find_col(fields or [], "買賣差額")
+    nets = {strip_html(r[0]): to_number(r[i_net]) / 1e8 for r in data or []}
+    foreign = next((v for k, v in nets.items() if k.startswith("外資及陸資") and "不含外資自營商" in k), None)
+    trust = nets.get("投信")
+    dealers = [v for k, v in nets.items() if k.startswith("自營商")]
+    total = next((v for k, v in nets.items() if k.startswith("合計")), None)
+    if None in (foreign, trust, total) or not dealers:
+        raise KeyError(f"BFI82U 缺列：{list(nets)}")
+    return {"foreign": foreign, "trust": trust, "dealer": sum(dealers), "total": total}
+
+
 def parse_tpex_day_all(records: list[dict], universe: dict | None = None) -> pd.DataFrame:
     """TPEx OpenAPI tpex_mainboard_daily_close_quotes。欄位：Date, SecuritiesCompanyCode,
     Close, Open, High, Low, TradingShares, TransactionAmount。"""
@@ -192,7 +250,8 @@ def parse_tpex_history_day(payload: dict, d: date, universe: dict | None = None)
 # 欄位淨買賣超以「股數」為單位。
 
 def parse_twse_t86(payload: dict, d: date, universe: dict | None = None) -> pd.DataFrame:
-    """TWSE fund/T86（selectType=ALLBUT0999 或 ALL）。外資 = 外陸資(不含外資自營商) + 外資自營商。"""
+    """TWSE fund/T86（selectType=ALL；本函式只保留 universe 內的上市股）。外資 = 外陸資(不含外資自營商) + 外資自營商。
+    stat 不是 OK → 空表（抓取函式 twse_inst 會改丟例外，讓呼叫端記警告）。"""
     uni = universe if universe is not None else load_universe()
     if payload.get("stat") != "OK":
         return pd.DataFrame(columns=INST_COLUMNS)
@@ -343,10 +402,21 @@ class MarketFetcher:
         return parse_tpex_history_day(payload, d)
 
     # ---- 三大法人
+    def twse_mi_index(self, d: date) -> pd.DataFrame:
+        payload = self.get_json(TWSE_MI_INDEX_URL, {"date": d.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"})
+        return parse_twse_mi_index(payload, d)
+
     def twse_inst(self, d: date) -> pd.DataFrame:
-        payload = self.get_json(TWSE_T86_URL, {"date": d.strftime("%Y%m%d"), "selectType": "ALLBUT0999",
+        """selectType 一律 ALL（ALLBUT0999 實測會回「查無資料」）。stat 不是 OK → ValueError（含 stat 文字）。"""
+        payload = self.get_json(TWSE_T86_URL, {"date": d.strftime("%Y%m%d"), "selectType": TWSE_T86_SELECT,
                                                "response": "json"})
+        if payload.get("stat") != "OK":
+            raise ValueError(f"T86 {d} stat={payload.get('stat')!r}")
         return parse_twse_t86(payload, d)
+
+    def twse_market_flow(self, d: date) -> dict:
+        payload = self.get_json(TWSE_BFI82U_URL, {"type": "day", "dayDate": d.strftime("%Y%m%d"), "response": "json"})
+        return parse_twse_bfi82u(payload, d)
 
     def tpex_inst(self, d: date) -> pd.DataFrame:
         payload = self.get_json(TPEX_INST_URL, {"type": "Daily", "sect": "EW", "date": d.strftime("%Y/%m/%d"),
@@ -370,8 +440,17 @@ def fetch_latest(fetcher: MarketFetcher | None = None, expected: date | None = N
     （回應日期必須等於 expected，否則丟錯）。"""
     f = fetcher or MarketFetcher()
     twse = f.twse_day_all()
-    if expected is not None and not twse.empty and twse["date"].iloc[0] != expected.isoformat():
-        raise MarketNotReady(f"上市最新行情日期是 {twse['date'].iloc[0]}，不是 {expected}（當天收盤資料尚未公布？）")
+    if expected is not None and (twse.empty or twse["date"].iloc[0] != expected.isoformat()):
+        got = twse["date"].iloc[0] if not twse.empty else "（空）"
+        try:
+            twse = f.twse_mi_index(expected)                    # 備援：依日期查詢（回應日期必須 = expected）
+        except Exception as e:  # noqa: BLE001
+            raise MarketNotReady(f"上市最新行情日期是 {got}，不是 {expected}；MI_INDEX 依日期查詢也失敗"
+                                 f"（{type(e).__name__}: {str(e)[:80]}）——當天收盤資料尚未公布？") from e
+        if twse.empty:
+            raise MarketNotReady(f"上市行情 {expected} 尚未公布（STOCK_DAY_ALL 為 {got}、MI_INDEX 無資料）")
+        if warnings is not None:
+            warnings.append(f"上市 STOCK_DAY_ALL 日期為 {got}（不是 {expected}），改用 MI_INDEX?date={expected:%Y%m%d}")
     try:
         tpex = f.tpex_day_all()
         if expected is not None and not tpex.empty and tpex["date"].iloc[0] != expected.isoformat():
@@ -447,7 +526,7 @@ def source_info(d: date | str, authority: str, *, historical: bool = False, as_o
             url = f"{TPEX_DAY_URL}?date={dd:%Y/%m/%d}&type=EW&response=json" if historical else TPEX_DAY_ALL_URL
     elif kind == "institutional":
         if authority == "twse":
-            url = f"{TWSE_T86_URL}?date={dd:%Y%m%d}&selectType=ALLBUT0999&response=json"
+            url = f"{TWSE_T86_URL}?date={dd:%Y%m%d}&selectType={TWSE_T86_SELECT}&response=json"
         else:
             url = f"{TPEX_INST_URL}?type=Daily&sect=EW&date={dd:%Y/%m/%d}&id=&response=json" if historical \
                 else TPEX_INST_ALL_URL

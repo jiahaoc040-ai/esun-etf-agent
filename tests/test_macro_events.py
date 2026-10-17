@@ -29,7 +29,8 @@ def api_json(*rows):
 SERIES = {"DGS2": api_json(("2026-10-21", "3.50"), ("2026-10-22", "3.42"), ("2026-10-23", ".")),
           "DFF": api_json(("2026-10-21", "4.08"), ("2026-10-22", "4.08")),
           "VIXCLS": api_json(("2026-10-22", "22.5"), ("2026-10-23", "26.1")),
-          "T10Y2Y": api_json(("2026-10-22", "0.55"), ("2026-10-23", "0.60"))}
+          "T10Y2Y": api_json(("2026-10-22", "0.55"), ("2026-10-23", "0.60")),
+          "DEXTAUS": api_json(("2026-10-15", "31.50"), ("2026-10-16", "31.60"))}
 
 
 def api_routes():
@@ -41,7 +42,7 @@ def test_fred_api_live_mode_without_realtime_and_no_key_leak(monkeypatch):
     monkeypatch.setenv("FRED_API_KEY", KEY)
     f = fetcher(api_routes())
     m, warns = fred.collect_macro(f, not_after=date(2026, 10, 23))
-    assert warns == [] and m["mode"] == "api" and set(m["series"]) == {"DGS2", "DFF", "VIXCLS", "T10Y2Y"}
+    assert warns == [] and m["mode"] == "api" and set(m["series"]) == {"DGS2", "DFF", "VIXCLS", "T10Y2Y", "DEXTAUS"}
     d = m["series"]["DGS2"]
     assert (d["date"], d["value"], d["prev_date"]) == ("2026-10-22", 3.42, "2026-10-21")      # "." 略過，用實際日期
     assert d["chg"] == pytest.approx(-8.0) and d["chg_unit"] == "bp"
@@ -142,7 +143,7 @@ def test_macro_observations_and_risk_flags(monkeypatch):
     panel = load_panel()
     ev = ob.build_evidence(panel, panel.dates[-1], inputs={"macro": m})
     obs = ev.by_topic("macro")
-    assert len(obs) == 4
+    assert len(obs) == 5
     dgs2 = next(o for o in obs if "DGS2" in o["statement"])
     assert dgs2["values"] == {"value": 3.42, "chg_bp": -8.0}
     src = ev.source_of(dgs2["obs_id"])[0]
@@ -192,7 +193,7 @@ def test_event_calendar_official_urls_and_no_guessed_dates():
 # ------------------------------------------------------------------ 宣告與提示詞
 def test_declaration_v23_name_philosophy_and_factors():
     d = load_declaration()
-    assert d["version"] == "2.3.0" and d["etf"]["name"] == "主動台灣焦點主題"
+    assert d["version"] == "2.3.1" and d["etf"]["name"] == "主動台灣焦點主題"
     assert d["philosophy_statement"] == PHIL
     f = {x["id"]: x for x in d["factors"]}
     assert {"us_events", "macro", "retail_attention", "trust_flow"} <= set(f)

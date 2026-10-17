@@ -268,3 +268,76 @@ def test_fetch_latest_dated_fallback_must_match_and_market_not_ready(monkeypatch
     s2 = _Sess({"STOCK_DAY_ALL": [twse]})
     with pytest.raises(m.MarketNotReady, match="尚未公布"):
         m.fetch_latest(m.MarketFetcher(session=s2), expected=date(2025, 1, 6))
+
+
+# ------------------------------------------------------------------ T86 selectType=ALL、MI_INDEX 備援、BFI82U
+def test_twse_t86_uses_select_all_and_raises_when_stat_not_ok(monkeypatch):
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    s = _Sess({"fund/T86": [fx("twse_t86.json")]})
+    df = m.MarketFetcher(session=s).twse_inst(date(2025, 12, 31))
+    assert not df.empty and s.calls[0][1]["selectType"] == "ALL" and s.calls[0][1]["date"] == "20251231"
+    assert "selectType=ALL&" in m.source_info("2025-12-31", "twse", kind="institutional")["url"]
+    s2 = _Sess({"fund/T86": [fx("twse_t86_empty.json")]})                    # stat「很抱歉，沒有符合條件的資料!」
+    with pytest.raises(ValueError, match="T86 2026-10-16 stat="):
+        m.MarketFetcher(session=s2).twse_inst(date(2026, 10, 16))
+    assert m.parse_twse_t86(fx("twse_t86_empty.json"), date(2026, 10, 16), UNI).empty
+
+
+def test_collect_market_warns_when_t86_stat_not_ok(monkeypatch, tmp_path):
+    from esun_agent.collect import daily
+
+    class F(m.MarketFetcher):
+        def __init__(self): pass
+        def twse_day_all(self): return m.parse_twse_day_all([r | {"Date": "1151016"} for r in fx("twse_day_all.json")], UNI)
+        def tpex_day_all(self): return m.parse_tpex_day_all([r | {"Date": "1151016"} for r in fx("tpex_day_all.json")], UNI)
+        def twse_inst(self, d): raise ValueError(f"T86 {d} stat='很抱歉，沒有符合條件的資料!'")
+        def tpex_inst(self, d): return m.parse_tpex_inst_history_day(fx("tpex_inst_history_day.json") | {"date": d.strftime("%Y%m%d")}, d, UNI)
+    monkeypatch.setattr(m, "save_daily", lambda *a, **k: [])
+    monkeypatch.setattr(m, "load_universe", lambda: UNI)
+    warns = daily.collect_market(date(2026, 10, 16), None, fetcher=F())
+    assert any("上市 T86 抓取失敗" in w and "沒有符合條件" in w for w in warns)
+
+
+def test_parse_mi_index_finds_table_by_title_and_strips_html():
+    p = fx("twse_mi_index_20261016.json")
+    df = m.parse_twse_mi_index(p, date(2026, 10, 16), UNI)
+    assert list(df["ticker"]) == ["2330", "2454"]                             # 0050 不在 universe；2883 無成交
+    r = df.set_index("ticker").loc["2330"]
+    assert r["close"] == 1300.0 and r["volume"] == 25_000_000 and r["avg_price"] == pytest.approx(32_500_000_000 / 25_000_000)
+    assert r["date"] == "2026-10-16"
+    shuffled = dict(p, tables=list(reversed(p["tables"])))                    # 表的順序改變也找得到
+    assert len(m.parse_twse_mi_index(shuffled, date(2026, 10, 16), UNI)) == 2
+    with pytest.raises(ValueError, match="≠ 查詢日期"):
+        m.parse_twse_mi_index(p, date(2026, 10, 15), UNI)
+    with pytest.raises(ValueError, match="stat"):
+        m.parse_twse_mi_index({"stat": "很抱歉，沒有符合條件的資料!"}, date(2026, 10, 16), UNI)
+    with pytest.raises(KeyError, match="每日收盤行情"):
+        m.parse_twse_mi_index(dict(p, tables=p["tables"][:2]), date(2026, 10, 16), UNI)
+
+
+def test_fetch_latest_falls_back_to_mi_index_when_stock_day_all_is_stale(monkeypatch):
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    monkeypatch.setattr(m, "load_universe", lambda: UNI)
+    stale = [r | {"Date": "1151015"} for r in fx("twse_day_all.json")]        # 實測 10/17 仍停在 1151015
+    tpex = [r | {"Date": "1151016"} for r in fx("tpex_day_all.json")]
+    s = _Sess({"STOCK_DAY_ALL": [stale], "afterTrading/MI_INDEX": [fx("twse_mi_index_20261016.json")],
+               "tpex_mainboard_daily_close_quotes": [tpex]})
+    warns = []
+    df = m.fetch_latest(m.MarketFetcher(session=s), expected=date(2026, 10, 16), warnings=warns)
+    assert set(df["date"]) == {"2026-10-16"} and {"2330", "2454", "3443"} <= set(df["ticker"])
+    url, params = next(c for c in s.calls if "MI_INDEX" in c[0])
+    assert url == m.TWSE_MI_INDEX_URL and params == {"date": "20261016", "type": "ALLBUT0999", "response": "json"}
+    assert any("STOCK_DAY_ALL 日期為 2026-10-15" in w and "MI_INDEX" in w for w in warns)
+    s2 = _Sess({"STOCK_DAY_ALL": [stale], "afterTrading/MI_INDEX": [{"stat": "很抱歉，沒有符合條件的資料!"}]})
+    with pytest.raises(m.MarketNotReady, match="MI_INDEX"):
+        m.fetch_latest(m.MarketFetcher(session=s2), expected=date(2026, 10, 16))
+
+
+def test_parse_bfi82u_amounts_in_100m():
+    f = m.parse_twse_bfi82u(fx("twse_bfi82u_20261016.json"), date(2026, 10, 16))
+    assert f["foreign"] == pytest.approx(-203.12345678) and f["trust"] == pytest.approx(25.0)
+    assert f["dealer"] == pytest.approx(10.0 - 25.0) and f["total"] == pytest.approx(-193.07345678)
+    with pytest.raises(ValueError, match="≠ 查詢日期"):
+        m.parse_twse_bfi82u(fx("twse_bfi82u_20261016.json"), date(2026, 10, 15))
+    with pytest.raises(ValueError, match="stat"):
+        m.parse_twse_bfi82u({"stat": "很抱歉，沒有符合條件的資料!"}, date(2026, 10, 16))

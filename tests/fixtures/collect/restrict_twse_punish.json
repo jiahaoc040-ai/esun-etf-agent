@@ -1,0 +1,27 @@
+[
+ {
+  "Number": "1",
+  "Date": "1151016",
+  "Code": "3017",
+  "Name": "奇鋐",
+  "NumberOfAnnouncement": "1",
+  "ReasonsOfDisposition": "連續三次",
+  "DispositionPeriod": "115/10/19～115/10/30",
+  "DispositionMeasures": "第一次處置",
+  "Detail": "..."
+ },
+ {
+  "Number": "2",
+  "Date": "1151001",
+  "Code": "2330",
+  "Name": "台積電",
+  "DispositionPeriod": "115/10/01～115/10/14"
+ },
+ {
+  "Number": "3",
+  "Date": "1151016",
+  "Code": "9999",
+  "Name": "非成分股",
+  "DispositionPeriod": "115/10/19～115/10/30"
+ }
+]

@@ -15,18 +15,20 @@ from ..data import market as mkt
 from ..data.market import MarketNotReady
 from .http import Fetcher
 from .news import collect_news
+from .restrictions import collect_restrictions
 from .revenue import collect_revenue, fact_event, last_reported_month
 from .taifex import collect_taifex
+from .fed import collect_fed
 from .fred import collect_macro
 from .us import collect_us
 
-ALL_STEPS = ("market", "inst", "etf", "revenue", "news", "taifex", "us", "macro")
+ALL_STEPS = ("market", "inst", "flow", "restrict", "etf", "revenue", "news", "taifex", "us", "macro", "fed")
 
 
 @dataclass
 class CollectResult:
     D: str
-    inputs: dict = field(default_factory=dict)            # {"taifex", "us", "macro", "events"} → DayContext.inputs
+    inputs: dict = field(default_factory=dict)            # {"taifex", "us", "macro", "fed", "market_flow", "restrictions", "events"} → DayContext.inputs
     revenue_events: dict[str, dict] = field(default_factory=dict)   # ticker → 月營收事件（daily_run 依焦點名單篩選）
     warnings: list[str] = field(default_factory=list)
     info: list[str] = field(default_factory=list)          # 不算警告的提示（例如 FRED 的 NDX 晚一天）
@@ -142,6 +144,27 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
             res.info.extend(us.get("info", []))
             res.inputs["us"] = us
 
+    def do_flow():
+        mf = mkt.MarketFetcher(sleep=0.5, raw_dir=raw_dir / "market" if raw_dir else None)
+        flow = mf.twse_market_flow(D)
+        res.inputs["market_flow"] = {"date": D.isoformat(), "content_as_of": f"{D.isoformat()}T15:00:00+08:00",
+                                     "url": f"{mkt.TWSE_BFI82U_URL}?type=day&dayDate={D:%Y%m%d}&response=json",
+                                     **{k: round(v, 4) for k, v in flow.items()}}
+
+    def do_restrict():
+        T = D + timedelta(days=1)                         # 近似下一交易日（只用來篩期間；組裝時再以實際 T 篩一次）
+        while T.weekday() >= 5:
+            T += timedelta(days=1)
+        r, warns = collect_restrictions(f, T)
+        res.warnings.extend(warns)
+        res.inputs["restrictions"] = r
+
+    def do_fed():
+        rel, warns = collect_fed(f, now)
+        res.warnings.extend(warns)
+        if rel:
+            res.inputs["fed"] = rel
+
     def do_macro():
         m, warns = collect_macro(f, not_after=now.date())
         res.warnings.extend(warns)
@@ -150,7 +173,7 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
 
     if "market" in steps:
         step("market", do_market)
-    for name, fn in (("etf", do_etf), ("revenue", do_revenue), ("news", do_news), ("taifex", do_taifex), ("us", do_us),
-                     ("macro", do_macro)):
+    for name, fn in (("flow", do_flow), ("restrict", do_restrict), ("etf", do_etf), ("revenue", do_revenue),
+                     ("news", do_news), ("taifex", do_taifex), ("us", do_us), ("macro", do_macro), ("fed", do_fed)):
         step(name, fn)
     return res

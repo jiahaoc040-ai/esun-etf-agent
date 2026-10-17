@@ -30,6 +30,23 @@
 | Meta 財報 | https://investor.atmeta.com/investor-events/default.aspx | to_confirm |
 | AMD 財報 | https://ir.amd.com/news-events/ir-calendar | to_confirm |
 
+## 待 SS 在 Mac 上實測的端點（雲端連不到，parser 依 fixture 寫成）
+
+| 端點 | 程式 | 要核對的事 |
+|---|---|---|
+| https://www.twse.com.tw/rwd/zh/fund/T86?date=YYYYMMDD&selectType=ALL&response=json | `MarketFetcher.twse_inst` | stat=OK、欄位名與 `parse_twse_t86` 相符 |
+| https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=YYYYMMDD&type=ALLBUT0999&response=json | `parse_twse_mi_index` | tables 中有標題含「每日收盤行情」的表、date 欄位、fields 名稱 |
+| https://www.twse.com.tw/rwd/zh/fund/BFI82U?type=day&dayDate=YYYYMMDD&response=json | `parse_twse_bfi82u` | 列名（外資及陸資(不含外資自營商)、投信、自營商(自行買賣)／(避險)、合計）、是否用 tables |
+| https://openapi.twse.com.tw/v1/announcement/punish | `collect/restrictions.py` | 代號欄（Code）、處置期間欄（含 Period）格式 |
+| https://openapi.twse.com.tw/v1/announcement/notice | 同上 | 代號欄 |
+| https://openapi.twse.com.tw/v1/exchangeReport/TWTAWU | 同上 | 代號欄、恢復交易日欄（含 Resum／恢復） |
+| https://www.tpex.org.tw/openapi/v1/tpex_disposal_information | 同上 | 代號欄（SecuritiesCompanyCode）、處置期間欄 |
+| https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_information | 同上 | 代號欄 |
+| FRED DEXTAUS（API／fredgraph.csv） | `collect/fred.py` | 最新觀測日（H.10 每週更新，常落後數日） |
+| https://www.federalreserve.gov/feeds/press_all.xml | `collect/fed.py` | item 的 title／link／pubDate／category 格式 |
+
+真實回應請存到 `tests/fixtures/market/real/` 或 `tests/fixtures/collect/real/`，parser 若不符再修。
+
 每個任務各開一個雲端工作階段（claude.ai/code → 選這個 repo），把「Prompt」整段貼上即可。
 做完先 review PR、merge，再開下一個。依序做：T1 → T2 → T4 → T3 → T5，T6 最晚 10/20 前完成。
 

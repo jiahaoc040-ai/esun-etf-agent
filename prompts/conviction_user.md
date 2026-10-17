@@ -4,6 +4,8 @@
 - {{blackout}}
 - {{us_events}}
 - {{macro_risk}}
+- {{market_flow}}
+- {{restrictions}}
 
 # 本 ETF 宣告（節錄）
 {{declaration_summary}}
