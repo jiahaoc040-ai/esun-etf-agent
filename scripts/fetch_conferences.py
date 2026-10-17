@@ -29,8 +29,9 @@ def main(argv=None) -> int:
     for w in warns:
         print("警告：" + w)
     for e in events:
-        print(f"{e['date']} {e['name']}")
-    print(f"共 {len(events)} 場")
+        print(f"{e['date']} [{e['kind']}] {e['name']}：{e['summary'][:40]}")
+    n_conf = sum(e["kind"] == "investor_conference" for e in events)
+    print(f"共 {len(events)} 場（investor_conference {n_conf}、broker_meeting {len(events) - n_conf}）")
     if not a.dry_run and not (warns and not events):
         write_stock_events(EVENT_CALENDAR_PATH, events, start, end)
         print(f"已寫入 {EVENT_CALENDAR_PATH}")

@@ -162,8 +162,9 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
         res.inputs["restrictions"] = r
 
     def do_corp():
-        c, warns = collect_corporate(f)
+        c, warns, info = collect_corporate(f, D)
         res.warnings.extend(warns)
+        res.info.extend(info)
         res.inputs["corporate"] = c
 
     def do_fed():

@@ -121,33 +121,69 @@ CORP_ROUTES = [("TWT48U_ALL", fxb("corp_twt48u.json")), ("t187ap12_L", fxb("corp
                ("BFZFZU_T", fxb("corp_bfzfzu_t.json")), ("t187ap09_L", fxb("corp_t187ap09_L.json"))]
 
 
-def test_collect_corporate_parses_each_endpoint():
-    c, warns = co.collect_corporate(fetcher(CORP_ROUTES))
+def test_collect_corporate_parses_each_endpoint(tmp_path):
+    c, warns, info = co.collect_corporate(fetcher(CORP_ROUTES), date(2026, 10, 16), insider_dir=tmp_path / "ins")
     assert warns == [] and {s["kind"] for s in c["sources"]} == set(co.ENDPOINTS)
     assert c["ex_dividend"] == {"2330": {"date": "2026-10-20"}, "2454": {"date": "2026-10-28"}}   # 6 碼權證略過
-    assert c["insider"]["2317"] == {"date": "2026-10-16", "shares": 110_000_000.0, "n": 2}
+    assert c["insider"]["2317"] == {"date": "2026-10-16", "shares": 110_000_000.0, "n": 1}         # 自有＋信託
+    assert set(c["insider"]) == {"2317", "2882"} and c["insider_days"] == ["2026-10-16"]
+    assert (tmp_path / "ins" / "2026-10-16.json").exists()                                         # 依出表日期存檔
+    assert info and "累積 1 天" in info[0] and "不足 5" in info[0]
     assert set(c["tv_promo"]) == {"3017"}
-    assert c["pledge"]["2408"]["ratio_pct"] == pytest.approx(55.0) and c["pledge"]["2330"]["ratio_pct"] == 0.0
-    c2, warns = co.collect_corporate(fetcher(CORP_ROUTES[1:]))
+    assert c["pledge"] == {"2408": {"ratio_pct": 55.0, "as_of": "2026-08-19"},
+                           "6770": {"ratio_pct": 47.81, "as_of": "2026-08-19"}}
+    c2, warns, _ = co.collect_corporate(fetcher(CORP_ROUTES[1:]), date(2026, 10, 16), insider_dir=tmp_path / "ins2")
     assert c2["ex_dividend"] == {} and any("除權除息預告抓取失敗" in w for w in warns)
 
 
-def test_corporate_signals_rules():
-    import pandas as pd
-    c, _ = co.collect_corporate(fetcher(CORP_ROUTES))
-    shares = pd.Series({"2317": 13_900_000_000.0, "2882": 14_600_000_000.0})
-    confs = [{"ticker": "2603", "date": "2026-10-20", "kind": "investor_conference"},
-             {"ticker": "2454", "date": "2026-10-29", "kind": "investor_conference"}]
-    no_new, down = co.corporate_signals(c, confs, "2026-10-16", "2026-10-19", shares=shares)
-    assert {k for k, _ in no_new["2330"]} == {"ex_dividend"}            # 10/20 在 T～T+3 內
-    assert "2454" not in no_new                                          # 10/28 除息在窗口外、法說 10/29 也不是下一交易日
-    assert {k for k, _ in no_new["2317"]} == {"insider"} and "0.79%" in no_new["2317"][0][1]
-    assert {k for k, _ in down["2317"]} == {"insider"} and "2882" not in down          # 10/01 申報已超過 5 個交易日
-    assert "3017" in no_new and "3017" in down                           # 異常推介：不新建倉＋降級
-    assert {k for k, _ in down["2408"]} == {"pledge"} and "2330" not in down
-    assert {k for k, _ in no_new["2603"]} == {"conference"}             # 法說 10/20 → 10/19 為前 1 個交易日
-    no_new2, _ = co.corporate_signals(c, confs, "2026-10-16", "2026-10-19", shares=None)
-    assert "2317" not in no_new2                                         # 沒有發行股數 → 只降級
+def test_insider_accumulates_daily_files_for_5_trading_days(tmp_path):
+    base = tmp_path / "ins"
+    for day, f in (("2026-10-15", "corp_insider_20261015.json"), ("2026-10-16", "corp_insider_20261016.json")):
+        co.save_insider_day(json.loads(fxb(f)), day, base)
+    co.save_insider_day([], "2026-10-08", base)                                   # 超過 5 個交易日，不計
+    ins, days = co.load_insider_window("2026-10-16", base)
+    assert days == ["2026-10-15", "2026-10-16"] and set(ins) == {"2317", "2882", "2408"}
+    assert ins["2408"] == {"date": "2026-10-15", "shares": 3_000_000.0, "n": 1}
+    ins, days = co.load_insider_window("2026-10-22", base)                        # 10/16～10/22：10/15 已出窗口
+    assert days == ["2026-10-16"] and "2408" not in ins
+    # 端點只回當日：第二天的回應不含 10/15 的 2408，但累積檔仍判斷為近 5 日有申報
+    routes = [("t187ap12_L", fxb("corp_insider_20261016.json"))]
+    c, _, info = co.collect_corporate(fetcher(routes), date(2026, 10, 16), insider_dir=base)
+    assert "2408" in c["insider"] and "累積 2 天" in info[0]
+    _, down = co.corporate_signals(c, [], "2026-10-16", "2026-10-19")
+    assert {"2317", "2882", "2408"} <= set(down)
+
+
+def test_pledge_text_field_format():
+    got = co.parse_corporate(json.loads(fxb("corp_t187ap09_L.json")), "pledge")
+    assert got["6770"]["ratio_pct"] == 47.81 and "3040" not in got                # 3040 遠見不在 150 檔
+    allu = co.parse_pledge(json.loads(fxb("corp_t187ap09_L.json")), {"3040": {}, "1258": {}, "4148": {}})
+    assert allu == {"3040": {"ratio_pct": 99.36, "as_of": "2026-08-19"}, "1258": {"ratio_pct": 92.1, "as_of": "2026-08-19"},
+                    "4148": {"ratio_pct": 61.2, "as_of": "2026-08-19"}}               # 名稱含 -KY、比例前只有一個空白
+    _, down = co.corporate_signals({"pledge": got}, [], "2026-10-16", "2026-10-19")
+    assert "2408" in down and "6770" not in down                                 # 47.81% 未超過 50%
+
+
+REAL_INSIDER, REAL_PLEDGE = REAL / "corp_insider.json", REAL / "corp_pledge.json"
+
+
+@pytest.mark.skipif(not REAL_INSIDER.exists(), reason="真實回應待 SS 從 data/raw/corp/ 複製到 tests/fixtures/collect/real/")
+def test_real_insider_response():
+    recs = json.loads(REAL_INSIDER.read_text(encoding="utf-8"))
+    assert recs and all("出表日期" in r and "公司代號" in r for r in recs)
+    assert any(k.startswith("預定轉讓總股數") for k in recs[0])
+    allu = {r["公司代號"].strip(): {} for r in recs}
+    got = co.parse_corporate(recs, "insider", allu)
+    assert got and all(x["date"] and x["shares"] > 0 for x in got.values())
+    assert co.insider_out_date(recs, "x") != "x"
+
+
+@pytest.mark.skipif(not REAL_PLEDGE.exists(), reason="真實回應待 SS 從 data/raw/corp/ 複製到 tests/fixtures/collect/real/")
+def test_real_pledge_response():
+    recs = json.loads(REAL_PLEDGE.read_text(encoding="utf-8"))
+    got = co.parse_corporate(recs, "pledge")
+    assert got and max(got.values(), key=lambda x: x["ratio_pct"]) == {"ratio_pct": 47.81, "as_of": "2026-08-19"}
+    assert max(got, key=lambda t: got[t]["ratio_pct"]) == "6770"
 
 
 def test_apply_downgrade_and_no_new_restriction():
@@ -158,21 +194,45 @@ def test_apply_downgrade_and_no_new_restriction():
 
 
 # ------------------------------------------------------------------ 4. 法說會
+def test_classify_conference_kind():
+    assert cf.classify("受凱基證券邀請參加投資人會議") == "broker_meeting"
+    assert cf.classify("2026年第三季財務暨營運報告") == "investor_conference"
+    assert cf.classify("本公司 Q3 營運成果") == "investor_conference"
+    assert cf.classify("受邀說明第三季營運成果") == "broker_meeting"              # 含「受邀」
+    assert cf.classify("參加亞洲科技論壇") == "broker_meeting"
+
+
 def test_parse_mops_conferences_and_write_calendar(tmp_path):
     rows = cf.parse_t100sb02(fxb("mops_t100sb02_sii_202610.html").decode())
-    assert [(r["ticker"], r["date"]) for r in rows] == [("2330", "2026-10-16"), ("2454", "2026-10-29"),
-                                                       ("2317", "2026-11-12"), ("2603", "2026-12-05")]
+    kinds = {(r["ticker"], r["date"]): r["kind"] for r in rows}
+    assert kinds[("2317", "2026-10-20")] == "broker_meeting" and kinds[("2317", "2026-11-12")] == "investor_conference"
+    assert kinds[("2303", "2026-10-28")] == "investor_conference"
+    assert [k for (t, _), k in kinds.items() if t == "1590"] == ["broker_meeting"] * 5     # 亞德客 5 場皆券商邀約
+    assert kinds[("2454", "2026-10-29")] == "investor_conference"                         # 同日兩筆 → 留自辦法說
+    assert sum(1 for r in rows if (r["ticker"], r["date"]) == ("2454", "2026-10-29")) == 1
+    assert ("9999", "2026-10-30") not in kinds
     with pytest.raises(ValueError, match="公司代號"):
         cf.parse_t100sb02("<table><tr><td>查無資料</td></tr></table>")
     routes = [("ajax_t100sb02_1", fxb("mops_t100sb02_sii_202610.html"))]
     evs, warns = cf.collect_conferences(fetcher(routes), date(2026, 10, 20), date(2026, 11, 30))
-    assert warns == [] and {(e["ticker"], e["date"]) for e in evs} == {("2454", "2026-10-29"), ("2317", "2026-11-12")}
-    assert all(e["kind"] == "investor_conference" and e["url"].startswith("https://mopsov.twse.com.tw") for e in evs)
+    assert warns == [] and len(evs) == len({(e["ticker"], e["date"]) for e in evs})            # 跨月／sii＋otc 重複只留一筆
+    conf = {(e["ticker"], e["date"]) for e in evs if e["kind"] == "investor_conference"}
+    assert conf == {("2303", "2026-10-28"), ("2454", "2026-10-29"), ("2317", "2026-11-12")}
+    assert sum(e["kind"] == "broker_meeting" for e in evs) == 6 and all(e["url"].startswith("https://mopsov") for e in evs)
     p = tmp_path / "cal.json"
-    p.write_text(json.dumps({"events": [], "stock_events": [{"date": "2026-12-10", "kind": "investor_conference", "ticker": "1101"}]}),
+    p.write_text(json.dumps({"events": [], "stock_events": [{"date": "2026-12-10", "kind": "investor_conference", "ticker": "1101"},
+                                                           {"date": "2026-10-21", "kind": "broker_meeting", "ticker": "1590"}]}),
                  encoding="utf-8")
     cal = cf.write_stock_events(p, evs, date(2026, 10, 20), date(2026, 11, 30))
-    assert [e["ticker"] for e in cal["stock_events"]] == ["2454", "2317", "1101"]
+    assert len(cal["stock_events"]) == len(evs) + 1 and cal["stock_events"][-1]["ticker"] == "1101"
+    # broker_meeting 不觸發任何限制
+    from esun_agent.agent.conviction_agent import conference_events
+    confs = conference_events(cal["stock_events"])
+    assert {c["ticker"] for c in confs} == {"2303", "2454", "2317", "1101"}
+    no_new, _ = co.corporate_signals({}, confs, "2026-10-16", "2026-10-19")
+    assert "2317" not in no_new                                                      # 10/20 是券商會議，不限制
+    no_new, _ = co.corporate_signals({}, confs, "2026-10-26", "2026-10-27")
+    assert {k for k, _ in no_new["2303"]} == {"conference"}                          # 10/28 自辦法說 → 10/27 不新建倉
 
 
 def test_upgrade_news_words():

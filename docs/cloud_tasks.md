@@ -58,6 +58,8 @@
 | https://openapi.twse.com.tw/v1/opendata/t187ap09_L | 同上 | 是否為董監質押資料；持股、設質股數、設質比例欄名 |
 | POST https://mopsov.twse.com.tw/mops/web/ajax_t100sb02_1（TYPEK=sii／otc、year=115、month=10／11） | `collect/conference.py`、`scripts/fetch_conferences.py` | 表頭「公司代號」「召開法人說明會日期」、日期格式；執行後 commit event_calendar.json |
 
+真實回應請放進 repo 供測試：`data/raw/corp/corp_insider.json` → `tests/fixtures/collect/real/corp_insider.json`、`data/raw/corp/corp_pledge.json` → `tests/fixtures/collect/real/corp_pledge.json`（放入後 `test_real_insider_response`／`test_real_pledge_response` 會自動執行，否則略過）。
+
 上櫃對應端點尚未找到（雲端無法查 TPEx OpenAPI 清單）：除權除息預告、內部人持股轉讓事前申報、投資理財節目異常推介、董監設質比例。
 請在 https://www.tpex.org.tw/openapi/ 的 Swagger 清單確認名稱後告知，再加進 `corporate.ENDPOINTS`。
 
