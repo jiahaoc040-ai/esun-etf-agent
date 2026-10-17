@@ -155,49 +155,108 @@ def fetch_cnbc(fetcher: Fetcher) -> dict[str, dict]:
     return parse_cnbc(json.loads(decode(raw)))
 
 
-def collect_us(fetcher: Fetcher, not_after: date | None = None, do_archive: bool = False) -> tuple[dict | None, list[str]]:
+# NYSE 休市日（固定規則可推得者；用於「預期最新美股交易日」，漏列只會讓當天多一則「全部來源都舊」的警告）
+NYSE_HOLIDAYS = {"2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
+                 "2026-09-07", "2026-11-26", "2026-12-25"}
+FRESH_CHECKED = ("SOX", "TSM")          # 多來源代號：最新收盤早於預期就換下一個來源（FRED 單一來源、慣常晚一天，不檢查）
+CROSS_CHECK_PP = 1.0                    # 兩來源同一天的日漲跌差異 > 1 個百分點 → 警告
+
+
+def _us_session(d: date) -> bool:
+    return d.weekday() < 5 and d.isoformat() not in NYSE_HOLIDAYS
+
+
+def expected_us_close(now: datetime) -> date:
+    """now 時點應已收盤的最新美股交易日：美東 16:00 之後才算當天收盤。"""
+    ny = now.astimezone(NY)
+    d = ny.date() if ny.hour >= 16 else ny.date() - timedelta(days=1)
+    while not _us_session(d):
+        d -= timedelta(days=1)
+    return d
+
+
+def collect_us(fetcher: Fetcher, not_after: date | None = None, do_archive: bool = False,
+               now: datetime | None = None) -> tuple[dict | None, list[str]]:
     """回傳 (us_input 或 None, warnings)。us_input = {url, content_as_of, name, quotes, sources, info}。
-    sources[] 各自帶 content_as_of（該代號收盤日）；info 是不算警告的提示（例如 FRED 的 NDX／SPX 晚一天）。"""
+    sources[] 各自帶 content_as_of（該代號收盤日）；info 是不算警告的提示（例如 FRED 的 NDX／SPX 晚一天）。
+    SOX／TSM：某來源最新收盤早於「預期的最新美股交易日」（expected_us_close(now)）→ 不採用、改試下一個來源；
+    全部來源都舊 → 用其中最新的並記警告。採用後再與另一來源（CNBC，或已抓到的同日資料）比對日漲跌，差 > 1pp 記警告。
+    now 未給時：有 not_after 以 not_after 當天 23:59（台北）為準，否則用現在。"""
+    if now is None:
+        now = (datetime.combine(not_after, datetime.max.time()).replace(tzinfo=TPE) if not_after
+               else datetime.now(TPE))
+    expected = expected_us_close(now).isoformat()
     quotes, warns, srcs, kinds = {}, [], [], {}
+    seen: dict[str, list[tuple[str, dict]]] = {}          # 代號 → [(來源, quote)]，交叉比對用
     cnbc: dict | Exception | None = None
+
+    def get_cnbc(sym: str) -> dict:
+        nonlocal cnbc
+        if cnbc is None:
+            try:
+                cnbc = fetch_cnbc(fetcher)
+            except Exception as e:  # noqa: BLE001 - 只抓一次；失敗記住
+                cnbc = e
+        if isinstance(cnbc, Exception):
+            raise cnbc
+        if sym not in cnbc:
+            raise ValueError(f"CNBC 回應沒有 {sym}")
+        c = cnbc[sym]
+        if not_after and c["date"] > not_after.isoformat():
+            raise ValueError(f"CNBC {sym} 日期 {c['date']} 晚於 {not_after}")
+        return dict(c)
+
     for name, chain in SOURCES.items():
-        q = None
-        errs = []
+        chosen, errs, old = None, [], []
         for kind, sym in chain:
             try:
                 if kind == "cnbc":
-                    if cnbc is None:
-                        try:
-                            cnbc = fetch_cnbc(fetcher)
-                        except Exception as e:  # noqa: BLE001 - 只抓一次；失敗記住
-                            cnbc = e
-                    if isinstance(cnbc, Exception):
-                        raise cnbc
-                    if sym not in cnbc:
-                        raise ValueError(f"CNBC 回應沒有 {sym}")
-                    c = cnbc[sym]
-                    if not_after and c["date"] > not_after.isoformat():
-                        raise ValueError(f"CNBC {sym} 日期 {c['date']} 晚於 {not_after}")
-                    q, url = dict(c), PAGE_URLS["cnbc"][sym]
+                    q, url = get_cnbc(sym), PAGE_URLS["cnbc"][sym]
                 else:
                     series, url = fetch_series(fetcher, kind, sym, not_after)
                     q = last_change(series, not_after)
-                break
             except Exception as e:  # noqa: BLE001 - 換下一個來源
                 errs.append(f"{SOURCE_NAMES[kind]}：{str(e).splitlines()[0][:80]}")
-        if q is None:
+                continue
+            seen.setdefault(name, []).append((kind, q))
+            if name in FRESH_CHECKED and q["date"] < expected:
+                old.append((q, url, kind))
+                errs.append(f"{SOURCE_NAMES[kind]}：最新收盤 {q['date']} 早於預期 {expected}")
+                continue
+            chosen = (q, url, kind)
+            break
+        if chosen is None and old:
+            chosen = max(old, key=lambda x: x[0]["date"])
+            warns.append(f"{name} 所有來源的收盤都早於預期 {expected}，採用最新的 {SOURCE_NAMES[chosen[2]]} "
+                         f"{chosen[0]['date']}（{'；'.join(errs)}）")
+        if chosen is None:
             warns.append(f"{name} 全部來源失敗（{'；'.join(errs)}），缺值")
             continue
+        q, url, kind = chosen
         quotes[name], kinds[name] = q, kind
         srcs.append({"url": url, "name": f"{name} 日線收盤（{SOURCE_NAMES[kind]}）",
                      "content_as_of": close_time_taipei(q["date"])})
+        if name in FRESH_CHECKED:
+            others = [(k, x) for k, x in seen.get(name, []) if k != kind and x["date"] == q["date"]]
+            if not others and kind != "cnbc":
+                sym = next((s_ for k, s_ in chain if k == "cnbc"), None)
+                try:
+                    c = get_cnbc(sym) if sym else None
+                    if c and c["date"] == q["date"]:
+                        others = [("cnbc", c)]
+                except Exception:  # noqa: BLE001 - 比對來源失敗不影響採用
+                    pass
+            for k, x in others[:1]:
+                if abs(x["chg_pct"] - q["chg_pct"]) > CROSS_CHECK_PP:
+                    warns.append(f"{name} {q['date']} 日漲跌兩來源差異過大：{SOURCE_NAMES[kind]} {q['chg_pct']:+.2f}%、"
+                                 f"{SOURCE_NAMES[k]} {x['chg_pct']:+.2f}%（> {CROSS_CHECK_PP:.0f} 個百分點）")
     if not quotes:
         return None, warns + ["美股／ADR 全部抓取失敗，今日不使用美股資料"]
     if do_archive:
-        for s in srcs:
-            a = archive(s["url"], fetcher.session)
-            if a:
-                s["archive_url"] = a
+        for s_ in srcs:
+            a_ = archive(s_["url"], fetcher.session)
+            if a_:
+                s_["archive_url"] = a_
     latest = max(q["date"] for q in quotes.values())
     info = []
     stale = [n for n, q in quotes.items() if q["date"] != latest]
@@ -215,6 +274,6 @@ def collect_us(fetcher: Fetcher, not_after: date | None = None, do_archive: bool
 
 def _prev_weekday(d: date) -> date:
     p = d - timedelta(days=1)
-    while p.weekday() >= 5:
+    while not _us_session(p):
         p -= timedelta(days=1)
     return p

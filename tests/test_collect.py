@@ -269,7 +269,8 @@ def test_collect_us_nasdaq_first_with_required_params_headers_and_page_urls(monk
     assert warns == [] and set(d["quotes"]) == {"SOX", "NDX", "SPX", "TSM"}
     assert d["info"] and "NDX" in d["info"][0] and "晚一天" in d["info"][0]                    # 只記 info，不算警告
     calls, kws = f.session.calls, f.session.kw
-    assert not any(h in c for c in calls for h in ("cnbc", "yahoo", "stooq"))
+    assert not any(h in c for c in calls for h in ("yahoo", "stooq"))
+    assert sum("quote.cnbc.com" in c for c in calls) == 1                                       # 只為交叉比對抓一次（失敗不影響）
     nq = [(c, kw) for c, kw in zip(calls, kws) if "api.nasdaq.com" in c]
     assert any("quote/SOX/historical?assetclass=index&fromdate=2026-10-03&todate=2026-10-17&limit=10" in c for c, _ in nq)
     assert any("quote/TSM/historical?assetclass=stocks&fromdate=2026-10-03&todate=2026-10-17" in c for c, _ in nq)
@@ -332,6 +333,77 @@ def test_us_date_mismatch_other_than_fred_lag_is_warning():
               ("quote/TSM/historical", fx(REAL + "nasdaq_TSM_20261016.json"))]
     d, warns = us.collect_us(fetcher(routes), not_after=date(2026, 10, 17))
     assert d["info"] == [] and any("日期不一致" in w and "NDX" in w for w in warns)
+
+
+def nasdaq_upto(name, last_date):
+    """真實 Nasdaq 回應，只保留 ≤ last_date（MM/DD/YYYY 比較用 ISO）的列。"""
+    d = json.loads(fx(REAL + name))
+    keep = []
+    for r in d["data"]["tradesTable"]["rows"]:
+        m, dd, y = r["date"].split("/")
+        if f"{y}-{m}-{dd}" <= last_date:
+            keep.append(r)
+    d["data"]["tradesTable"]["rows"] = keep
+    return json.dumps(d).encode()
+
+
+SS_NOW = datetime(2026, 10, 17, 17, 21, tzinfo=TZ)                    # 台北 10/17 17:21＝美東 10/17 05:21（週六）
+
+
+def test_expected_us_close():
+    assert us.expected_us_close(SS_NOW) == date(2026, 10, 16)
+    assert us.expected_us_close(datetime(2026, 10, 17, 3, 59, tzinfo=TZ)) == date(2026, 10, 15)   # 美東 10/16 15:59 未收盤
+    assert us.expected_us_close(datetime(2026, 10, 17, 4, 0, tzinfo=TZ)) == date(2026, 10, 16)
+    assert us.expected_us_close(datetime(2026, 10, 19, 20, 30, tzinfo=TZ)) == date(2026, 10, 16)  # 週一晚上：上週五
+    assert us.expected_us_close(datetime(2026, 11, 27, 6, 50, tzinfo=TZ)) == date(2026, 11, 25)   # 感恩節休市
+
+
+def test_stale_nasdaq_sox_falls_through_to_cnbc():
+    """實測：Nasdaq SOX 只到 10/15（11,581.22，−0.88%），CNBC 有 10/16（11,137.29，−3.83%）→ 採用 CNBC。"""
+    routes = [("id=", fred_csv("X", ("2026-10-15", 1), ("2026-10-16", 2))),
+              ("quote/SOX/historical", nasdaq_upto("nasdaq_SOX_20261016.json", "2026-10-15")),
+              ("quote/TSM/historical", fx(REAL + "nasdaq_TSM_20261016.json")),
+              ("quote.cnbc.com", fx(REAL + "cnbc_SOX_TSM_20261016.json"))]
+    f = fetcher(routes)
+    d, warns = us.collect_us(f, not_after=SS_NOW.date(), now=SS_NOW)
+    assert warns == []
+    assert d["quotes"]["SOX"] == {"close": 11137.287, "chg_pct": -3.83}
+    srcs = {s["name"].split()[0]: s for s in d["sources"]}
+    assert "CNBC" in srcs["SOX"]["name"] and srcs["SOX"]["content_as_of"] == "2026-10-17T04:00:00+08:00"
+    assert "Nasdaq" in srcs["TSM"]["name"]                                                     # TSM 的 Nasdaq 是新的
+    assert sum("quote.cnbc.com" in c for c in f.session.calls) == 1 and not any("yahoo" in c for c in f.session.calls)
+
+
+def test_all_sources_stale_uses_newest_with_warning():
+    routes = [("id=", fred_csv("X", ("2026-10-15", 1), ("2026-10-16", 2))),
+              ("quote/SOX/historical", nasdaq_upto("nasdaq_SOX_20261016.json", "2026-10-15")),
+              ("quote/TSM/historical", fx(REAL + "nasdaq_TSM_20261016.json")),
+              ("quote.cnbc.com", ConnectionError("x")), ("chart/%5ESOX", ConnectionError("x"))]
+    d, warns = us.collect_us(fetcher(routes), not_after=SS_NOW.date(), now=SS_NOW)
+    assert d["quotes"]["SOX"]["close"] == 11581.22
+    assert d["quotes"]["SOX"]["chg_pct"] == pytest.approx((11581.22 / 11684.38 - 1) * 100, abs=1e-4)   # −0.88%
+    w = [x for x in warns if x.startswith("SOX 所有來源的收盤都早於預期 2026-10-16")]
+    assert len(w) == 1 and "Nasdaq 2026-10-15" in w[0] and "CNBC" in w[0]
+    assert {s["name"].split()[0]: s["content_as_of"] for s in d["sources"]}["SOX"] == "2026-10-16T04:00:00+08:00"
+
+
+def test_cross_source_change_divergence_warns():
+    cn = json.loads(fx(REAL + "cnbc_SOX_TSM_20261016.json"))
+    for q in cn["FormattedQuoteResult"]["FormattedQuote"]:
+        if q["symbol"] == "TSM":
+            q["change_pct"] = "-4.50%"                                       # Nasdaq 算出 −2.28%
+    routes = [("id=", fred_csv("X", ("2026-10-15", 1), ("2026-10-16", 2))),
+              ("quote/SOX/historical", fx(REAL + "nasdaq_SOX_20261016.json")),
+              ("quote/TSM/historical", fx(REAL + "nasdaq_TSM_20261016.json")),
+              ("quote.cnbc.com", json.dumps(cn).encode())]
+    d, warns = us.collect_us(fetcher(routes), not_after=SS_NOW.date(), now=SS_NOW)
+    assert d["quotes"]["TSM"]["close"] == 412.61                                             # 仍採用 Nasdaq
+    assert [w for w in warns if "差異過大" in w] == [
+        "TSM 2026-10-16 日漲跌兩來源差異過大：Nasdaq -2.28%、CNBC -4.50%（> 1 個百分點）"]
+    # SOX：Nasdaq −3.833% vs CNBC −3.83% → 不警告；CNBC 日期不同時不比對
+    routes[3] = ("quote.cnbc.com", fx(REAL + "cnbc_SOX_TSM_20261016.json"))
+    _, warns = us.collect_us(fetcher(routes), not_after=SS_NOW.date(), now=SS_NOW)
+    assert not any("差異過大" in w for w in warns)
 
 
 def test_us_and_taifex_inputs_become_observations():

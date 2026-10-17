@@ -136,7 +136,7 @@ def collect_day(D: date, raw_dir: Path | None, *, steps=ALL_STEPS, now: datetime
             res.inputs["taifex"] = tx
 
     def do_us():
-        us, warns = collect_us(f, not_after=now.date(), do_archive=do_archive)
+        us, warns = collect_us(f, not_after=now.date(), do_archive=do_archive, now=now)
         res.warnings.extend(warns)
         if us:
             res.info.extend(us.get("info", []))
