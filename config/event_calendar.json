@@ -289,17 +289,17 @@
   },
   {
    "date": "2026-10-28",
-   "kind": "broker_meeting",
+   "kind": "investor_conference",
    "ticker": "4966",
-   "name": "4966 譜瑞-KY 投資人會議",
+   "name": "4966 譜瑞-KY 法人說明會",
    "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
    "summary": "譜瑞科技股份有限公司(股票代號: 4966) 西元2026年第三季線上法人 說明會將於西元2026年10月28日下午2點(台北時間)舉行，有關會議大綱如下: -公佈公司西元2026年第三季營運成果與西元2026年第四季營運展望 -問與答 有意參加者可透過網路連結參加線上法人說明會。欲提問之分析師或媒體請撥打下列 電話號碼參加會議。 電話法人說明會撥打號碼: 台灣: 02-3396-1191 香港:"
   },
   {
    "date": "2026-10-28",
-   "kind": "broker_meeting",
+   "kind": "investor_conference",
    "ticker": "6510",
-   "name": "6510 精測 投資人會議",
+   "name": "6510 精測 法人說明會",
    "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
    "summary": "中華精測科技股份有限公司(代號:6510)擬於2026年10月28日舉行第三季線上法說會，報告本公司營運成果。欲參加者可透過網路連接下列網址參加線上法說會。 https://www.zucast.com/webcast/lEl6ff3h"
   },
@@ -337,9 +337,9 @@
   },
   {
    "date": "2026-10-30",
-   "kind": "broker_meeting",
+   "kind": "investor_conference",
    "ticker": "2454",
-   "name": "2454 聯發科 投資人會議",
+   "name": "2454 聯發科 法人說明會",
    "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
    "summary": "‎(1) 公布本公司2026年第3季財務報告及2026年第4季業績展望。 (2) 參加方式：請參見https://www.mediatek.com/zh-‎tw/investor-relations/financial-information#quarterly-earnings-‎release ‎"
   },
@@ -401,9 +401,9 @@
   },
   {
    "date": "2026-11-12",
-   "kind": "broker_meeting",
+   "kind": "investor_conference",
    "ticker": "3045",
-   "name": "3045 台灣大 投資人會議",
+   "name": "3045 台灣大 法人說明會",
    "url": "https://mopsov.twse.com.tw/mops/web/t100sb02_1",
    "summary": "(1)公布本公司115年第3季財務報告。(2)參加方式：請參見https://corp.taiwanmobile.com/investor-relations/investor-relations.html"
   },

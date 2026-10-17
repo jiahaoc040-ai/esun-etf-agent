@@ -305,3 +305,42 @@ def test_declaration_lengths_by_len():
     assert any("內部上限 280" in e for e in validate_submission(bad))
     bad["etf"]["name"] = "主動台灣焦點主題2026"
     assert any("中文或英文" in e for e in validate_submission(bad))
+
+
+# ------------------------------------------------------------------ 法說會分類：SS 實測 26 場
+REAL_CONF = REAL / "conferences_20261020_1130.json"
+EXPECT_CONF = {("3105", None), ("2337", None), ("6239", None), ("2303", None), ("3718", None), ("4966", "2026-10-28"),
+               ("6510", "2026-10-28"), ("2308", "2026-10-29"), ("2379", None), ("2409", None), ("2454", "2026-10-30"),
+               ("2412", None), ("4904", None), ("3529", "2026-11-13"), ("3045", "2026-11-12")}
+EXPECT_BROKER = {("2317", "2026-10-20"), ("3529", "2026-10-29"), ("2308", "2026-11-03"), ("2395", None), ("8299", None),
+                 ("7750", None)} | {("1590", d) for d in ("2026-11-04", "2026-11-10", "2026-11-17", "2026-11-20", "2026-11-24")}
+
+
+def _match(expect, t, d):
+    return (t, d) in expect or (t, None) in expect
+
+
+def test_real_26_conferences_classification():
+    evs = json.loads(REAL_CONF.read_text(encoding="utf-8"))
+    assert len(evs) == 26 and len({(e["ticker"], e["date"]) for e in evs}) == 26
+    got = {(e["ticker"], e["date"]): cf.classify(e["summary"]) for e in evs}
+    conf = {k for k, v in got.items() if v == "investor_conference"}
+    broker = {k for k, v in got.items() if v == "broker_meeting"}
+    assert len(conf) == 15 and len(broker) == 11
+    assert all(_match(EXPECT_CONF, t, d) for t, d in conf), conf
+    assert all(_match(EXPECT_BROKER, t, d) for t, d in broker), broker
+    assert sum(t == "1590" for t, _ in broker) == 5
+    # 「參加方式」「參加網址」「欲參加者」不構成排除；「受…邀請」要排除
+    assert cf.classify("(1)公布本公司115年第3季財務報告。(2)參加方式：請參見網址") == "investor_conference"
+    assert cf.classify("擬於10月28日舉行第三季線上法說會，報告本公司營運成果。欲參加者可上網報名") == "investor_conference"
+    assert cf.classify("本公司受大和國泰證券邀請，說明本公司115年第2季之財務報告相關資訊") == "broker_meeting"
+
+
+def test_event_calendar_stock_events_use_current_rules():
+    cal = json.loads((ROOT / "config" / "event_calendar.json").read_text(encoding="utf-8"))
+    se = cal["stock_events"]
+    assert se and all(e["kind"] == cf.classify(e["summary"]) for e in se)               # 已依新規則重新分類
+    assert cf.reclassify(se) == se
+    assert all(e["name"].endswith("法人說明會" if e["kind"] == "investor_conference" else "投資人會議") for e in se)
+    from esun_agent.agent.conviction_agent import conference_events
+    assert {c["ticker"] for c in conference_events(se)} >= {"2454", "3045", "4966", "6510"}

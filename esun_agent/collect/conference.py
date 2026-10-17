@@ -6,10 +6,10 @@
 端點與欄位未在雲端驗證（fixture 為推測格式）；首次在 Mac 執行請核對（scripts/fetch_conferences.py --save-raw）。
 
 分類：只有「公司自辦的季度／年度財報法說」標 kind=investor_conference（摘要含「第三季」「第3季」「Q3」「營運成果」
-「財務」「營運報告」「展望」其一，且不含「受邀」「邀請」「參加」）；其餘（券商邀約的投資人會議等）標 kind=broker_meeting，
+「財務」「營運報告」「展望」其一，且不含「受邀」「邀請」（含「受…邀請」）；「參加方式」「參加網址」等字樣不構成排除）；其餘（券商邀約的投資人會議等）標 kind=broker_meeting，
 仍寫進 event_calendar 但不觸發任何限制。同一檔同一天只留一筆（兩種都有時留 investor_conference）。
-實測：2317 鴻海 10/20「受凱基證券邀請參加投資人會議」→ broker_meeting；2303 聯電 10/28「2026年第三季財務暨營運報告」
-→ investor_conference。
+實測 26 場（tests/fixtures/collect/real/conferences_20261020_1130.json）：2317 鴻海 10/20「受凱基證券邀請參加投資人會議」
+→ broker_meeting；2454 聯發科 10/30「…(2) 參加方式：…」→ investor_conference。
 
 規則（conviction_agent）：investor_conference 前 1 個交易日不新建倉；法說後重大訊息含財測／展望上修字樣 → 提示 Agent 可據此提高信心一級
 （必須引用該重大訊息 observation）。
@@ -30,7 +30,7 @@ MOPS_CONF_PAGE = "https://mopsov.twse.com.tw/mops/web/t100sb02_1"
 KIND = "investor_conference"
 BROKER_KIND = "broker_meeting"
 EARNINGS_WORDS = ("第三季", "第3季", "Q3", "營運成果", "財務", "營運報告", "展望")
-INVITED_WORDS = ("受邀", "邀請", "參加")
+INVITED_WORDS = ("受邀", "邀請")            # 「受…邀請」也含「邀請」；「參加方式」「參加網址」不構成排除
 UPGRADE_WORDS = ("上修", "調升", "調高", "優於預期", "財測上調", "展望樂觀", "上調")
 UPGRADE_CONTEXT = ("財測", "展望", "營運", "預估", "指引", "目標")
 
@@ -115,6 +115,21 @@ def collect_conferences(fetcher: Fetcher, start: date, end: date, universe: dict
                 events.append(e)
     events.sort(key=lambda e: (e["date"], e["ticker"]))
     return events, warns
+
+
+def reclassify(events: list[dict]) -> list[dict]:
+    """依目前的 classify 重新標 kind（只動 investor_conference／broker_meeting，名稱一併更新）。"""
+    out = []
+    for e in events:
+        if e.get("kind") in (KIND, BROKER_KIND):
+            k = classify(e.get("summary", ""))
+            name = e.get("name", "")
+            for suffix in (" 法人說明會", " 投資人會議"):
+                if name.endswith(suffix):
+                    name = name[: -len(suffix)] + (" 法人說明會" if k == KIND else " 投資人會議")
+            e = {**e, "kind": k, "name": name}
+        out.append(e)
+    return out
 
 
 def write_stock_events(path: Path, events: list[dict], start: date, end: date) -> dict:
